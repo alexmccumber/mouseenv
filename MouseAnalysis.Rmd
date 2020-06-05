@@ -1,0 +1,363 @@
+---
+title: "MousePR8"
+output: html_document
+---
+
+```{r}
+#install.packages("ggpubr")
+#install.packages("rstatix")
+#install.packages("tidyverse")
+#install.packages("ggthemes")
+library(ggpubr)
+library(rstatix)
+library(tidyverse)
+library(readr)
+library(ggthemes)
+
+MouseLungMetaData <- read_csv("PR8/MouseLungMetaData.csv")
+```
+
+```{r}
+#Subtracted from initial weight
+weightgain = MouseLungMetaData %>%
+  mutate(D.0 = Day.0 - Day.0, D.7 = Day.7 - Day.0, D.14 = Day.14 - Day.0, D.21 = Day.21 - Day.0, D.28 = Day.28 - Day.0, D.32 = Day.32 - Day.0) %>%
+  select(., c(ID, Soil, D.0, D.7, D.14, D.21, D.28, D.32)) %>%
+  gather(., key = "time", value = "weight", D.0, D.7, D.14, D.21, D.28, D.32) %>%
+  convert_as_factor(Soil, time)
+
+#% change from baseline
+weightgain = MouseLungMetaData %>%
+  mutate(D.0 = (Day.0 - Day.0)/Day.0, D.7 = (Day.7 - Day.0)/Day.0, D.14 = (Day.14 - Day.0)/Day.0, D.21 = (Day.21 - Day.0)/Day.0, D.28 = (Day.28 - Day.0)/Day.0, D.32 = (Day.32 - Day.0)/Day.0) %>%
+  select(., c(ID, Soil, D.0, D.7, D.14, D.21, D.28, D.32)) %>%
+  gather(., key = "time", value = "weight", D.0, D.7, D.14, D.21, D.28, D.32) %>%
+  convert_as_factor(Soil, time)
+
+weightgain$time = ordered(weightgain$time, c("D.0", "D.7", "D.14", "D.21", "D.28", "D.32"))
+
+head(weightgain, 20)
+```
+
+```{r}
+weightgain %>%
+  group_by(time, Soil) %>%
+  get_summary_stats(weight, type = "mean_se")
+```
+
+```{r}
+ggboxplot(weightgain, x = "time", y = "weight", facet.by ="Soil")
+
+ggline(weightgain, x = "time", y = "weight", group = "ID", facet.by = "Soil")+theme_fivethirtyeight()
+
+weightgain %>%
+  ggline(., x = "time", y= "weight", color = "Soil", add = "mean_se") + theme_fivethirtyeight()
+```
+
+```{r}
+weightgain %>%
+  group_by(Soil,time) %>%
+  identify_outliers(weight)
+```
+
+```{r}
+weightgain %>%
+  subset(., time != "D.0") %>%
+  group_by(Soil, time) %>%
+  shapiro_test(weight)
+```
+
+```{r}
+weightgain %>%
+  subset(., time != "D.0") %>%
+  ggqqplot(., "weight", facet.by = c("Soil","time"))
+```
+
+```{r}
+library(nlme)
+
+#Subtracted from baseline
+weightgainaov = MouseLungMetaData %>%
+  mutate("0" = Day.0 - Day.0, "7" = Day.7 - Day.0, "14" = Day.14 - Day.0, "21" = Day.21 - Day.0, "28" = Day.28 - Day.0, "32" = Day.32 - Day.0) %>%
+  select(., c(ID, Soil, "0", "7", "14", "21", "28", "32")) %>%
+  gather(., key = "time", value = "weight", "0", "7", "14", "21", "28", "32") %>%
+  convert_as_factor(Soil)
+
+#normalized by percent
+weightgainaov = MouseLungMetaData %>%
+  mutate("0" = (Day.0 - Day.0)/Day.0, "7" = (Day.7 - Day.0)/Day.0, "14" = (Day.14 - Day.0)/Day.0, "21" = (Day.21 - Day.0)/Day.0, "28" = (Day.28 - Day.0)/Day.0, "32" = (Day.32 - Day.0)/Day.0) %>%
+  select(., c(ID, Soil, Cage, Cohort, "0", "7", "14", "21", "28", "32")) %>%
+  gather(., key = "time", value = "weight", "0", "7", "14", "21", "28", "32") %>%
+  convert_as_factor(Soil)
+
+weightgainaov$time = as.factor(weightgainaov$time)
+weightgainaov$Cage = as.factor(weightgainaov$Cage)
+weightgainaov$Cohort = as.factor(weightgainaov$Cohort)
+
+class(weightgainaov$time)
+#correlation = ACF(form = ~ time|ID)
+
+model = lme(weight ~ time + Soil + time*Soil,
+            random = ~1|ID/time/Soil,
+            data = weightgainaov)
+
+anova(model)
+
+install.packages("lsmeans")
+library(lsmeans)
+
+lsmeans(model, pairwise~time*Soil, adjust="tukey")
+
+
+aovweight = aov(weight ~ (time*Soil) + Error(Cage*Cohort), data = weightgainaov)
+
+summary(aovweight)
+```
+
+```{r}
+weightloss = MouseLungMetaData %>%
+  mutate(D.32 = (Day.32 - Day.32)/Day.32, D.35 = (Day.35 - Day.32)/Day.32, D.37 = (Day.37 - Day.32)/Day.32, D.39 = (Day.39 - Day.32)/Day.32) %>%
+  select(., c(Cage, Cohort, ID, Soil, Virus, D.32, D.35, D.37, D.39)) %>%
+  gather(., key = "time", value = "weight", D.32, D.35, D.37, D.39) %>%
+  convert_as_factor(Soil, time)
+
+weightloss$time = ordered(weightloss$time, c("D.32", "D.35", "D.37", "D.39"))
+
+head(weightloss, 20)
+```
+
+```{r}
+weightloss %>%
+  subset(., time != "D.32") %>%
+  ggqqplot(., "weight", facet.by = c("Soil","Virus"))
+```
+
+```{r}
+ggboxplot(weightloss, x = "time", y = "weight", facet.by = c("Virus","Soil"))+theme_solarized()
+
+ggline(weightgain, x = "time", y = "weight", group = "ID", color = "ID")
+```
+```{r}
+weightloss %>%
+  group_by(Soil,time,Virus) %>%
+  identify_outliers(weight)
+```
+
+```{r}
+weightloss %>%
+  subset(., time != "D.32") %>%
+  group_by(Soil, time, Virus) %>%
+  shapiro_test(weight)
+```
+
+```{r}
+weightloss %>%
+  subset(., ID != 682) %>%
+  group_by(Soil, time, Virus) %>%
+  get_summary_stats(weight, type = "mean_se")
+
+g= weightloss %>%
+  subset(., ID != 682) %>%
+  ggline(., x = "time", y= "weight", color = "Soil", facet.by = "Virus", add = "mean_se") + theme_fivethirtyeight()
+```
+
+```{r}
+aovweight = weightloss %>%
+  subset(., ID != 682)
+
+aovweight$Cage = as.factor(aovweight$Cage)
+aovweight$Cohort = as.factor(aovweight$Cohort)
+aovweight$Virus = as.factor(aovweight$Virus)
+
+weightlossaov = aov(weight ~ time*Soil*Virus + Error(Cohort*Cage), data = aovweight)
+
+summary(weightlossaov)
+
+weightloss2 = rbind(weightloss, weightloss)
+
+model = weightloss2 %>%
+  subset(., ID != 682) %>%
+  aov(weight ~ time*Soil*Virus + Error(Cohort+Cage), data = .)
+
+summary(model)
+```
+
+
+```{r}
+weightloss %>%
+  subset(., ID != 682) %>%
+  ggboxplot(., x = "time", y = "weight", color = "Soil", facet.by = "Virus")
+```
+
+```{r}
+cellcount = MouseLungMetaData %>%
+  rename(LVC = `live.cells/ml`) %>%
+  select(., c(ID, Cage, Cohort, Soil, Virus, LVC, Macrophages, Neutrophils, Eosinophils, Lymphocytes, Total_Cells)) %>%
+  subset(., ID != 682) 
+
+cellcount$Cage = as.factor(cellcount$Cage)
+cellcount$Cohort = as.factor(cellcount$Cohort)
+cellcount$Virus = as.factor(cellcount$Virus)
+```
+
+```{r}
+cellcount %>%
+  group_by(Virus, Soil) %>%
+  get_summary_stats(LVC, type = "mean_se")
+```
+
+```{r}
+model = lm(`live.cells/ml` ~ Virus*Soil,
+           data = cellcount)
+
+ggqqplot(residuals(model))
+
+cellcount %>%
+  group_by(Virus, Soil) %>%
+  shapiro_test(LVC)
+```
+
+```{r}
+ggqqplot(cellcount, "LVC", facet.by = c("Virus", "Soil"))
+```
+
+```{r}
+cellcount %>%
+  group_by(Soil,Virus) %>%
+  identify_outliers(LVC)
+```
+
+```{r}
+cellcount  %>%
+  ggboxplot(., x = "Soil", y = "LVC", facet.by = "Virus")
+
+cellcount %>%
+  subset(., ID != 617 & ID !=614) %>%
+  ggboxplot(., x = "Soil", y = "LVC", facet.by = "Virus")
+```
+
+
+```{r}
+update.packages("stats")
+library(stats)
+model = lme(LVC ~ Virus*Soil,
+            random = ~1|Cohort,
+            data = cellcount)
+
+anova(model)
+
+aovcell = aov(LVC ~ Virus*Soil + Error(Cohort/Cage), data = cellcount)
+
+summary(aovcell)
+
+TukeyHSD(aovcell)
+
+cellcount_NO = cellcount %>%
+  subset(., ID != 617 & ID !=614)
+
+aovcell = aov(LVC ~ Virus*Soil, data = cellcount_NO)
+
+summary(aovcell)
+
+TukeyHSD(aovcell)
+```
+
+```{r, artificially doubling sample size}
+cellcount2 = rbind(cellcount, cellcount)
+
+model = lme(LVC ~ Soil + Virus + Virus*Soil,
+            random = ~1|Cohort,
+            data = cellcount2)
+
+anova(model)
+
+aovcell = stats::aov(LVC ~ Virus*Soil, data = cellcount2)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+```
+
+```{r}
+cellcount  %>%
+  ggboxplot(., x = "Soil", y = "Macrophages", facet.by = "Virus")
+
+aovcell = cellcount %>%
+  stats::aov(Macrophages ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+cellcount  %>%
+  ggboxplot(., x = "Soil", y = "Neutrophils", facet.by = "Virus")
+
+aovcell = cellcount %>%
+  stats::aov(Neutrophils ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+cellcount  %>%
+  ggboxplot(., x = "Soil", y = "Eosinophils", facet.by = "Virus")
+
+aovcell = cellcount %>%
+  stats::aov(Eosinophils ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+g=cellcount  %>%
+  ggboxplot(., x = "Soil", y = "Lymphocytes", facet.by = "Virus")
+
+aovcell = cellcount %>%
+  stats::aov(Lymphocytes ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+```
+
+```{r}
+cellcount_NO  %>%
+  ggboxplot(., x = "Soil", y = "Macrophages", facet.by = "Virus")
+
+aovcell = cellcount_NO %>%
+  stats::aov(Macrophages ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+cellcount_NO  %>%
+  ggboxplot(., x = "Soil", y = "Neutrophils", facet.by = "Virus")
+
+aovcell = cellcount_NO %>%
+  stats::aov(Neutrophils ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+cellcount_NO  %>%
+  ggboxplot(., x = "Soil", y = "Eosinophils", facet.by = "Virus")
+
+aovcell = cellcount_NO %>%
+  stats::aov(Eosinophils ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+cellcount_NO  %>%
+  ggboxplot(., x = "Soil", y = "Lymphocytes", facet.by = "Virus")
+
+aovcell = cellcount_NO %>%
+  stats::aov(Lymphocytes ~ Virus*Soil, data = .)
+
+Anova(aovcell)
+
+TukeyHSD(aovcell)
+
+```
+
