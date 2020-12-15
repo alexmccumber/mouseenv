@@ -1,0 +1,117 @@
+---
+title: "MouseRNAProcessing"
+output: html_document
+---
+
+#create needed directories
+```{r}
+# Directories
+fastq.dir = file.path("/home/data/rnaseqfiles")
+out.dir = file.path("/home/data/out") 
+genome.dir = file.path("/home/data/genome")
+trimmed.dir=file.path("/home/data/trimmedrnaseq")
+
+# make directory for output
+dir.create(out.dir, recursive = TRUE)
+dir.create(genome.dir, recursive = TRUE)
+dir.create(trimmed.dir, recursive = TRUE)
+
+# Set variables for bash
+Sys.setenv(OUT_DIR = out.dir)
+Sys.setenv(FASTQ_DIR = fastq.dir)
+Sys.setenv(GENOME_DIR = genome.dir)
+Sys.setenv(TRIMMED_DIR = trimmed.dir)
+```
+
+#download genome fasta and gtf files
+```{bash}
+wget --no-verbose --directory-prefix $GENOME_DIR ftp://ftp.ensembl.org/pub/release-102/fasta/mus_musculus/dna_index/Mus_musculus.GRCm38.dna.toplevel.fa.gz
+
+wget --no-verbose --directory-prefix $GENOME_DIR ftp://ftp.ensembl.org/pub/release-102/gtf/mus_musculus/Mus_musculus.GRCm38.102.gtf.gz
+```
+
+```{bash}
+gunzip --force $GENOME_DIR/Mus_musculus.GRCm38.dna.toplevel.fa.gz
+
+gunzip --force $GENOME_DIR/Mus_musculus.GRCm38.102.gtf.gz
+```
+
+```{bash}
+STAR \
+    --runMode genomeGenerate \
+    --genomeDir $GENOME_DIR \
+    --genomeFastaFiles $GENOME_DIR/Mus_musculus.GRCm38.dna.toplevel.fa \
+    --sjdbGTFfile $GENOME_DIR/Mus_musculus.GRCm38.102.gtf \
+    --outFileNamePrefix $OUT_DIR/genome_ \
+    --limitGenomeGenerateRAM=33524399488 \
+    --runThreadN 30
+```
+
+
+```{bash}
+fastq-mcf -q 20 -x 0.5 \
+  $HOME/mouseenv/adapters.fasta \
+  $FASTQ_DIR/637_S1_L001_R1_001.fastq.gz \
+  $FASTQ_DIR/637_S1_L001_R2_001.fastq.gz \
+  -o $TRIMMED_DIR/637_S1_L001_R1_001.fastq.trimmed.gz \
+  -o $TRIMMED_DIR/637_S1_L001_R2_001.fastq.trimmed.gz
+```
+
+```{bash}
+for FASTQ in $FASTQ_DIR/*_L00[1]_R1_001.fastq.gz
+    do
+        FASTQ_BASE="$(basename ${FASTQ} '_R1_001.fastq.gz')"
+        echo "---------------- TRIMMING: $FASTQ_BASE ----------------"
+        fastq-mcf \
+            $HOME/mouseenv/adapters.fasta \
+            $FASTQ_DIR/${FASTQ_BASE}_R1_001.fastq.gz \
+            $FASTQ_DIR/${FASTQ_BASE}_R2_001.fastq.gz \
+            -q 20 -x 0.5 \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R1_001.trim.fastq.gz \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R2_001.trim.fastq.gz
+        
+        echo "---------------- MAPPING: $FASTQ_BASE ----------------"
+        STAR \
+            --runMode alignReads \
+            --twopassMode None \
+            --genomeDir $GENOME_DIR \
+            --readFilesIn $TRIMMED_DIR/${FASTQ_BASE}_R1_001.trim.fastq.gz $TRIMMED_DIR/${FASTQ_BASE}_R2_001.trim.fastq.gz \
+            --readFilesCommand gunzip -c \
+            --outFileNamePrefix $OUT_DIR/${FASTQ_BASE}_ \
+            --quantMode GeneCounts \
+            --outSAMtype BAM SortedByCoordinate \
+            --runThreadN 30 
+            
+done
+```
+
+```{bash}
+
+for FASTQ in $FASTQ_DIR/*_L00[2]_R1_001.fastq.gz
+    do
+        FASTQ_BASE="$(basename ${FASTQ} '_R1_001.fastq.gz')"
+        echo "---------------- TRIMMING: $FASTQ_BASE ----------------"
+        fastq-mcf \
+            $HOME/mouseenv/adapters.fasta \
+            $FASTQ_DIR/${FASTQ_BASE}_R1_001.fastq.gz \
+            $FASTQ_DIR/${FASTQ_BASE}_R2_001.fastq.gz \
+            -q 20 -x 0.5 \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R1_001.trim.fastq.gz \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R2_001.trim.fastq.gz
+        
+        echo "---------------- MAPPING: $FASTQ_BASE ----------------"
+        STAR \
+            --runMode alignReads \
+            --twopassMode None \
+            --genomeDir $GENOME_DIR \
+            --readFilesIn $TRIMMED_DIR/${FASTQ_BASE}_R1_001.trim.fastq.gz $TRIMMED_DIR/${FASTQ_BASE}_R2_001.trim.fastq.gz \
+            --readFilesCommand gunzip -c \
+            --outFileNamePrefix $OUT_DIR/${FASTQ_BASE}_ \
+            --quantMode GeneCounts \
+            --outSAMtype BAM SortedByCoordinate \
+            --runThreadN 30 
+            
+done
+```
+
+
