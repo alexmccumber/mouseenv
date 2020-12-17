@@ -1,0 +1,265 @@
+---
+title: "RNASeqAnalysis"
+output: html_document
+---
+
+#write a function to read in table
+```{r}
+library(tidyverse)
+
+genecounts = function(file){
+sample = str_split(basename(file), "_") %>%
+  sapply( ., "[", c(1,3) ) %>%
+  t(.) %>%
+  as.data.frame(.) %>%
+  unite(., name, sep = "_")
+
+geneDF = read.table(file, skip = 4, col.names = c("gene","unstrandedcount", "strandcount1", "strandcount2")) %>%
+  column_to_rownames(., "gene") %>%
+  select(., c(-unstrandedcount, -strandcount1)) 
+
+names(geneDF)[1] <- sample$name
+
+return(geneDF)
+}
+```
+
+#test function to see if it works
+```{r}
+pracDF = genecounts("/home/data/out/genereads/660_S24_L002_ReadsPerGene.out.tab")
+```
+
+#get list of files to run through purrr and purrr away
+```{r}
+path <- "/home/data/out/genereads"
+
+files = sort(list.files(path, pattern="ReadsPerGene.out.tab", full.names = TRUE))
+
+countable = map_dfc(files, genecounts)
+
+row.names(countable) = row.names(pracDF)
+
+countmat = as.matrix(countable)
+
+saveRDS(countable, "~/mouseenv/GeneCountTable.RDS")
+```
+
+#read in metadata and get order correct
+```{r}
+metaDF = read_csv("~/mouseenv/RNAMetaFile.csv") %>%
+  column_to_rownames(., "file")
+
+countmat <- countmat[, rownames(metaDF)]
+
+all(rownames(metaDF) == colnames(countmat))
+```
+
+#look at PR8 vs. HI mice
+```{r}
+#BiocManager::install("DESeq2")
+library(DESeq2)
+
+dds <- DESeqDataSetFromMatrix(countData = countmat,
+                              colData = metaDF,
+                              design = ~ Virus*SoilAdd)
+dds
+
+ddsColl <- collapseReplicates(dds, dds$ID, dds$Lane)
+
+keep <- rowSums(counts(ddsColl)) >= 10
+
+ddsColl <- dds[keep,]
+
+ddsColl <- estimateSizeFactors(ddsColl)
+
+ddsColl <- estimateDispersions(ddsColl)
+```
+
+```{r}
+ddsDE <- DESeq(ddsColl)
+
+res <- results(ddsDE)
+summary(res)
+
+res05 <- results(ddsDE, alpha=0.05)
+summary(res05)
+```
+
+```{r}
+results(ddsDE, tidy = TRUE) %>%
+    arrange(desc(-padj)) %>%
+    filter(., log2FoldChange >=2 | log2FoldChange <= -2)
+```
+
+
+```{r}
+vsd <- vst(ddsDE)
+rld <- rlog(ddsDE)
+
+plotPCA(vsd, intgroup=c("Virus", "SoilType"))
+
+plotPCA(rld, intgroup=c("Virus", "SoilType"))
+p$data
+```
+
+```{r}
+ggplot(results(ddsDE, contrast = c("Virus", "HI", "PR8"), tidy = TRUE), 
+       aes(x = log2FoldChange, y = -log10(padj))) + geom_point()
+
+plotMA(res01, ylim=c(-2,2))
+```
+
+#Ctrl vs Soil HI mice
+```{r}
+HISoilDF = subset(metaDF, Virus == "HI")
+
+countmatHI = subset(countmat, select = row.names(HISoilDF))
+
+all(rownames(HISoilDF) == colnames(countmatHI))
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = countmatHI,
+                              colData = HISoilDF,
+                              design = ~ SoilAdd)
+dds
+
+ddsColl <- collapseReplicates(dds, dds$ID, dds$Lane)
+
+keep <- rowSums(counts(ddsColl)) >= 10
+
+ddsColl <- dds[keep,]
+
+ddsColl <- estimateSizeFactors(ddsColl)
+
+ddsColl <- estimateDispersions(ddsColl)
+
+ddsDE <- DESeq(ddsColl)
+
+res <- results(ddsDE)
+summary(res)
+
+res05 <- results(ddsDE, alpha=0.05)
+summary(res05)
+```
+
+```{r}
+vsd <- vst(ddsDE)
+rld <- rlog(ddsDE)
+
+plotPCA(vsd, intgroup=c("Virus", "SoilType"))
+
+plotPCA(rld, intgroup=c("Virus", "SoilType"))
+```
+
+```{r}
+ggplot(results(ddsDE, contrast = c("SoilAdd", "Yes", "No"), tidy = TRUE), 
+       aes(x = log2FoldChange, y = -log10(padj))) + geom_point()
+
+plotMA(res01, ylim=c(-2,2))
+```
+
+#Ctrl vs Soil PR8 mice
+```{r}
+PR8SoilDF = subset(metaDF, Virus == "PR8")
+
+countmatPR8 = subset(countmat, select = row.names(PR8SoilDF))
+
+all(rownames(PR8SoilDF) == colnames(countmatPR8))
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = countmatPR8,
+                              colData = PR8SoilDF,
+                              design = ~ SoilAdd)
+dds
+
+ddsColl <- collapseReplicates(dds, dds$ID, dds$Lane)
+
+keep <- rowSums(counts(ddsColl)) >= 10
+
+ddsColl <- dds[keep,]
+
+ddsColl <- estimateSizeFactors(ddsColl)
+
+ddsColl <- estimateDispersions(ddsColl)
+
+ddsDE <- DESeq(ddsColl)
+
+res <- results(ddsDE)
+summary(res)
+
+res = res[order(res$padj, na.last=NA), ]
+alpha = 0.05
+sigtab = res[(res$padj < alpha), ]
+sigtab = as(sigtab, "data.frame")
+
+All = as(res, "data.frame")
+```
+
+```{r}
+vsd <- vst(ddsDE)
+rld <- rlog(ddsDE)
+
+plotPCA(vsd, intgroup=c("Virus", "SoilType"))
+
+plotPCA(rld, intgroup=c("Virus", "SoilType"))
+```
+
+```{r}
+BiocManager::install("goseq")
+ 
+#package to pull out annotated information about our genome and genes 
+BiocManager::install("geneLenDataBase")      
+
+BiocManager::install("EnsDb.Mmusculus.v79")
+
+BiocManager::install("org.Mm.eg.db")
+```
+
+```{r}
+library("goseq")
+library("geneLenDataBase")
+library("EnsDb.Mmusculus.v79")
+```
+
+```{r}
+supportedGenomes()
+supportedGeneIDs()
+```
+
+```{r}
+library(data.table)
+library(tidyverse)
+sigtab = setDT(sigtab, keep.rownames = TRUE)[]
+All = setDT(All, keep.rownames = TRUE)[]
+
+
+DEG.vector <- c(t(sigtab))
+ALL.vector<-c(t(All$genes))
+
+All$genes=as.integer(All$rn%in%sigtab$rn)
+names(ALL.vector)=All$rn 
+#lets explore this new vector a bit
+head(All$genes)
+tail(All$genes)
+sum(All$genes)
+
+head(ALL.vector)
+
+head(sigtab)
+head(All)
+```
+
+```{r}
+pwf=nullp(ALL.vector,"mm9","ensGene")
+
+GO.wall=goseq(pwf,"mm9","ensGene")
+  
+#How many enriched GO terms do we have
+class(GO.wall)
+head(GO.wall)
+nrow(GO.wall)
+```
+
+#New approach: https://genviz.org/module-04-expression/0004/02/01/DifferentialExpression/
