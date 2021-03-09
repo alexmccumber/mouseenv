@@ -52,6 +52,10 @@ metaDF = read_csv("~/mouseenv/RNAMetaFile.csv") %>%
 countmat <- countmat[, rownames(metaDF)]
 
 all(rownames(metaDF) == colnames(countmat))
+
+metaDF$unique = paste(metaDF$ID, metaDF$Lane, sep = ".")
+
+metaDF$group = paste0(metaDF$SoilType, metaDF$Virus)
 ```
 
 #look at PR8 vs. HI mice
@@ -59,36 +63,46 @@ all(rownames(metaDF) == colnames(countmat))
 #BiocManager::install("DESeq2")
 library(DESeq2)
 
+#does the effect of influenza exposure vary by soil type
 dds <- DESeqDataSetFromMatrix(countData = countmat,
                               colData = metaDF,
-                              design = ~ Virus*SoilAdd)
-dds
+                              design = ~ SoilType + Virus + SoilType:Virus)
+
+keep <- rowSums(counts(dds)) >= 10
+
+dds <- dds[keep,]
 
 ddsColl <- collapseReplicates(dds, dds$ID, dds$Lane)
-
-keep <- rowSums(counts(ddsColl)) >= 10
-
-ddsColl <- dds[keep,]
-
-ddsColl <- estimateSizeFactors(ddsColl)
-
-ddsColl <- estimateDispersions(ddsColl)
 ```
 
 ```{r}
 ddsDE <- DESeq(ddsColl)
 
 res <- results(ddsDE)
+res
 summary(res)
 
-res05 <- results(ddsDE, alpha=0.05)
-summary(res05)
+#No significant results for road
+summary(results(ddsDE, name = "SoilTypeRoad.VirusPR8"))
+
+#1226 diff expressed genes
+ResRiver = results(ddsDE, name = "SoilTypeRiver.VirusPR8", tidy = T)%>%
+  dplyr::filter(., padj < 0.1) %>%
+  dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
+
+#144 diff expressed genes
+ResPine = results(ddsDE, name = "SoilTypePine.VirusPR8", tidy = T) %>%
+  dplyr::filter(., padj < 0.1) %>%
+  dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
+
+#Need to make a better plot here
+plotCounts(ddsDE, gene="ENSMUSG00000025934", intgroup=c("Virus", "SoilType"))
 ```
 
 ```{r}
 results(ddsDE, tidy = TRUE) %>%
     arrange(desc(-padj)) %>%
-    filter(., log2FoldChange >=2 | log2FoldChange <= -2)
+    dplyr::filter(., log2FoldChange >=2 | log2FoldChange <= -2)
 ```
 
 
@@ -98,13 +112,16 @@ rld <- rlog(ddsDE)
 
 plotPCA(vsd, intgroup=c("Virus", "SoilType"))
 
-plotPCA(rld, intgroup=c("Virus", "SoilType"))
+plotPCA(rld, intgroup=c("Virus", "SoilType")) + 
+  theme_bw()
 p$data
 ```
 
 ```{r}
 ggplot(results(ddsDE, contrast = c("Virus", "HI", "PR8"), tidy = TRUE), 
-       aes(x = log2FoldChange, y = -log10(padj))) + geom_point()
+       aes(x = log2FoldChange, y = -log10(padj))) + 
+  geom_point() +
+  theme_bw()
 
 plotMA(res01, ylim=c(-2,2))
 ```
@@ -206,6 +223,8 @@ plotPCA(vsd, intgroup=c("Virus", "SoilType"))
 plotPCA(rld, intgroup=c("Virus", "SoilType"))
 ```
 
+
+#annotate diff expressed genes
 ```{r}
 BiocManager::install("goseq")
  
@@ -227,18 +246,18 @@ library("EnsDb.Mmusculus.v79")
 supportedGenomes()
 supportedGeneIDs()
 ```
-
+#can delete from here
 ```{r}
 library(data.table)
 library(tidyverse)
-sigtab = setDT(sigtab, keep.rownames = TRUE)[]
+
+ResPine = setDT(ResPine, keep.rownames = TRUE)[]
 All = setDT(All, keep.rownames = TRUE)[]
 
-
-DEG.vector <- c(t(sigtab))
+DEG.vector <- c(t(ResPine))
 ALL.vector<-c(t(All$genes))
 
-All$genes=as.integer(All$rn%in%sigtab$rn)
+All$genes=as.integer(All$rn%in%ResPine$row)
 names(ALL.vector)=All$rn 
 #lets explore this new vector a bit
 head(All$genes)
@@ -261,5 +280,134 @@ class(GO.wall)
 head(GO.wall)
 nrow(GO.wall)
 ```
+#to here
+
+```{r}
+# set up kegg database
+kg.mm <- kegg.gsets(species="mmu")
+kegg.sigmet.gs <- kg.mm$kg.sets[kg.mm$sigmet.idx]
+kegg.dise.gs <- kg.mm$kg.sets[kg.mm$dise.idx]
+
+# set up go database
+go.mm2 <- go.gsets(species="mouse")
+go.bp.gs <- go.mm$go.sets[go.mm$go.subs$BP]
+go.mf.gs <- go.mm$go.sets[go.mm$go.subs$MF]
+go.cc.gs <- go.mm$go.sets[go.mm$go.subs$CC]
+```
+
+#Pathway analysis with Pine samples
+```{r}
+# load in libraries to annotate data
+library(AnnotationDbi)
+library(org.Mm.eg.db)
+
+# annotate the deseq2 results with additional gene identifiers
+# convert ensembl to entrez
+ResPine$symbol <- mapIds(org.Mm.eg.db, keys=ResPine$row, column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+ResPine$entrez <- mapIds(org.Mm.eg.db, keys=ResPine$row, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+ResPine$name <- mapIds(org.Mm.eg.db, keys=ResPine$row, column="GENENAME", keytype="ENSEMBL", multiVals="first")
+```
+#New object for kegg and go pathways
+```{r}
+ResPine.fc <- ResPine$log2FoldChange
+names(ResPine.fc) <- ResPine$entrez
+```
+
+#Run gage on kegg and go
+```{r}
+# Run enrichment analysis on all log fc
+# sigmet - signaling or metabolism pathways
+# dise - disease pathways
+fc.kegg.sigmet.p <- gage(ResPine.fc, gsets = kegg.sigmet.gs)
+fc.kegg.dise.p <- gage(ResPine.fc, gsets = kegg.dise.gs)
+
+fc.kegg.sigmet.p.ND <- gage(ResPine.fc, gsets = kegg.sigmet.gs, same.dir = F)
+fc.kegg.dise.p.ND <- gage(ResPine.fc, gsets = kegg.dise.gs, same.dir = F)
+
+fc.go.bp.p <- gage(ResPine.fc, gsets = go.bp.gs)
+fc.go.mf.p <- gage(ResPine.fc, gsets = go.mf.gs)
+fc.go.cc.p <- gage(ResPine.fc, gsets = go.cc.gs)
+
+# covert the kegg results to data frames
+fc.kegg.sigmet.p.up <- as.data.frame(fc.kegg.sigmet.p$greater)
+fc.kegg.dise.p.up <- as.data.frame(fc.kegg.dise.p$greater)
+
+fc.kegg.sigmet.p.down <- as.data.frame(fc.kegg.sigmet.p$less)
+fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less)
+
+fc.kegg.sigmet.p.ND = as.data.frame(fc.kegg.sigmet.p.ND)
+fc.kegg.dise.p.ND = as.data.frame(fc.kegg.dise.p.ND)
+
+# convert the go results to data frames
+# bp - biological processes, mf - molecular function, cc - cellular processes
+fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater)
+fc.go.mf.p.up <- as.data.frame(fc.go.mf.p$greater)
+fc.go.cc.p.up <- as.data.frame(fc.go.cc.p$greater)
+
+fc.go.bp.p.down <- as.data.frame(fc.go.bp.p$less)
+fc.go.mf.p.down <- as.data.frame(fc.go.mf.p$less)
+fc.go.cc.p.down <- as.data.frame(fc.go.cc.p$less)
+```
+
+#River Samples
+```{r}
+# annotate the deseq2 results with additional gene identifiers
+# convert ensembl to entrez
+ResRiver$symbol <- mapIds(org.Mm.eg.db, keys=ResRiver$row, column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+ResRiver$entrez <- mapIds(org.Mm.eg.db, keys=ResRiver$row, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+ResRiver$name <- mapIds(org.Mm.eg.db, keys=ResRiver$row, column="GENENAME", keytype="ENSEMBL", multiVals="first")
+```
+#New object for kegg and go pathways
+```{r}
+ResRiver.fc <- ResRiver$log2FoldChange
+names(ResRiver.fc) <- ResRiver$entrez
+```
+
+#Run gage on kegg and go
+```{r}
+# Run enrichment analysis on all log fc
+fc.kegg.sigmet.p <- gage(ResRiver.fc, gsets = kegg.sigmet.gs)
+fc.kegg.dise.p <- gage(ResRiver.fc, gsets = kegg.dise.gs)
+fc.go.bp.p <- gage(ResRiver.fc, gsets = go.bp.gs)
+fc.go.mf.p <- gage(ResRiver.fc, gsets = go.mf.gs)
+fc.go.cc.p <- gage(ResRiver.fc, gsets = go.cc.gs)
+
+# covert the kegg results to data frames
+fc.kegg.sigmet.p.up <- as.data.frame(fc.kegg.sigmet.p$greater)
+fc.kegg.dise.p.up <- as.data.frame(fc.kegg.dise.p$greater)
+
+fc.kegg.sigmet.p.down <- as.data.frame(fc.kegg.sigmet.p$less)
+fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less)
+
+# convert the go results to data frames
+fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater)
+fc.go.mf.p.up <- as.data.frame(fc.go.mf.p$greater)
+fc.go.cc.p.up <- as.data.frame(fc.go.cc.p$greater)
+
+fc.go.bp.p.down <- as.data.frame(fc.go.bp.p$less)
+fc.go.mf.p.down <- as.data.frame(fc.go.mf.p$less)
+fc.go.cc.p.down <- as.data.frame(fc.go.cc.p$less)
+```
+
+#install pathview
+```{r}
+#BiocManager::install("pathview")
+library(pathview)
+```
+
+```{r}
+# View the mmu04060 pathway from the pathway analysis
+fc.kegg.sigmet.p.up[grepl("mmu04060", rownames(fc.kegg.sigmet.p.up), fixed=TRUE),]
+
+# Overlay the expression data onto this pathway
+pathview(gene.data=ResRiver.fc, species="mmu", pathway.id="mmu04060")
+
+pathview(gene.data=ResRiver.fc, species="mmu", pathway.id="mmu05169")
+
+pathview(gene.data=ResRiver.fc, species="mmu", pathway.id="mmu05166")
+
+pathview(gene.data=ResRiver.fc, species="mmu", pathway.id="mmu04110")
+``` 
+
 
 #New approach: https://genviz.org/module-04-expression/0004/02/01/DifferentialExpression/
