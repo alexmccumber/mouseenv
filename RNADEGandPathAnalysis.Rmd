@@ -365,6 +365,7 @@ names(ResRiver.fc) <- ResRiver$entrez
 
 #Run gage on kegg and go
 ```{r}
+library(gage)
 # Run enrichment analysis on all log fc
 fc.kegg.sigmet.p <- gage(ResRiver.fc, gsets = kegg.sigmet.gs)
 fc.kegg.dise.p <- gage(ResRiver.fc, gsets = kegg.dise.gs)
@@ -373,20 +374,44 @@ fc.go.mf.p <- gage(ResRiver.fc, gsets = go.mf.gs)
 fc.go.cc.p <- gage(ResRiver.fc, gsets = go.cc.gs)
 
 # covert the kegg results to data frames
-fc.kegg.sigmet.p.up <- as.data.frame(fc.kegg.sigmet.p$greater)
-fc.kegg.dise.p.up <- as.data.frame(fc.kegg.dise.p$greater)
+fc.kegg.sigmet.p.up <- as.data.frame(fc.kegg.sigmet.p$greater) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.kegg.sigmet.p.up$pathway = "kegg.sigmet.up"
+fc.kegg.dise.p.up <- as.data.frame(fc.kegg.dise.p$greater) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.kegg.dise.p.up$pathway = "kegg.dise.up"
 
-fc.kegg.sigmet.p.down <- as.data.frame(fc.kegg.sigmet.p$less)
-fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less)
+#fc.kegg.sigmet.p.down <- as.data.frame(fc.kegg.sigmet.p$less) %>%
+#  dplyr::filter(., q.val < 0.1)
+#fc.kegg.sigmet.p.down$pathway = "kegg.sigmet.down"
+#fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less) %>%
+#  dplyr::filter(., q.val < 0.1)
+#fc.kegg.dise.p.down$pathway = "kegg.dise.down"
 
 # convert the go results to data frames
-fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater)
-fc.go.mf.p.up <- as.data.frame(fc.go.mf.p$greater)
-fc.go.cc.p.up <- as.data.frame(fc.go.cc.p$greater)
+fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.go.bp.p.up$pathway = "go.bp.up"
+fc.go.mf.p.up <- as.data.frame(fc.go.mf.p$greater) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.go.mf.p.up$pathway = "go.mf.up"
+fc.go.cc.p.up <- as.data.frame(fc.go.cc.p$greater) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.go.cc.p.up$pathway = "go.cc.up"
 
-fc.go.bp.p.down <- as.data.frame(fc.go.bp.p$less)
-fc.go.mf.p.down <- as.data.frame(fc.go.mf.p$less)
-fc.go.cc.p.down <- as.data.frame(fc.go.cc.p$less)
+fc.go.bp.p.down <- as.data.frame(fc.go.bp.p$less) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.go.bp.p.down$pathway = "go.bp.down"
+fc.go.mf.p.down <- as.data.frame(fc.go.mf.p$less) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.go.mf.p.down$pathway = "go.mf.down"
+fc.go.cc.p.down <- as.data.frame(fc.go.cc.p$less) %>%
+  dplyr::filter(., q.val < 0.1)
+fc.go.cc.p.down$pathway = "go.cc.down"
+
+RiverGSE = rbind(fc.kegg.sigmet.p.up, fc.kegg.dise.p.up, fc.go.bp.p.up, fc.go.mf.p.up, fc.go.cc.p.up)
+
+saveRDS(RiverGSE, "~/mouseenv/rivergse.rds")
 ```
 
 #install pathview
