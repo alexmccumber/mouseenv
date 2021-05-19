@@ -1,0 +1,898 @@
+---
+title: "16SAnalysis"
+output: html_document
+---
+
+```{r}
+library(dada2)
+library(dplyr)
+library(stringr)
+library(phyloseq)
+#BiocManager::install("decontam")
+library(decontam)
+#BiocManager::install("ggtree")
+library(ggtree)
+library(ape)
+#install.packages("picante")
+library(picante)
+#install.packages("caret")
+library(caret)
+#install.packages("MLmetrics")
+library(MLmetrics)
+install.packages("remotes")
+remotes::install_github("Russel88/MicEco")
+require(MicEco)
+install.packages("gjam")
+library(gjam)
+remotes::install_github('reptalex/phylofactor')
+library(phylofactor)
+```
+
+```{r}
+# Directories
+fastq.dir = file.path("/home/data/16Sfiles")
+trimmed.dir = file.path("/home/data/trimmed")
+
+# Set variables for bash
+Sys.setenv(FASTQ_DIR = fastq.dir)
+Sys.setenv(TRIMMED_DIR = trimmed.dir)
+```
+
+```{bash}
+mkdir $TRIMMED_DIR
+
+for FASTQ in $FASTQ_DIR/*_R1_001.fastq.gz
+  do
+    FASTQ_BASE="$(basename ${FASTQ} '_001.fastq.gz')"
+    echo "---------------- TRIMMING: $FASTQ ----------------"
+    $HOME/.local/bin/cutadapt -g XTCGCATAGTG -o $TRIMMED_DIR/${FASTQ_BASE}.trim.fastq.gz $FASTQ >>/home/data/cutadaptF.txt
+    done
+
+for FASTQ in $FASTQ_DIR/*_R2_001.fastq.gz
+  do
+    FASTQ_BASE="$(basename ${FASTQ} '_001.fastq.gz')"
+    echo "---------------- TRIMMING: $FASTQ ----------------"
+    $HOME/.local/bin/cutadapt -g XTCGCATAGGACTAC -o $TRIMMED_DIR/${FASTQ_BASE}.trim.fastq.gz $FASTQ >>/home/data/cutadaptR.txt
+    done
+```
+
+```{r}
+path <- "/home/data/trimmed" 
+list.files(path)
+```
+
+```{r}
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1.trim.fastq.gz", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2.trim.fastq.gz", full.names = TRUE))
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- str_remove(basename(fnFs), "_L002_R1.trim.fastq.gz")
+
+```
+
+```{r}
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(230,190),
+              maxN=0, maxEE=c(3,3), trimLeft = c(16,13), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=F) 
+
+errF <- learnErrors(filtFs, nbases = 1e10, multithread=TRUE)
+errR <- learnErrors(filtRs, nbases = 1e10, multithread=TRUE)
+plotErrors(errF, nominalQ=T)
+```
+
+```{r}
+
+dadaFs <- dada(filtFs[1:20], err=errF, multithread=TRUE)
+dadaRs <- dada(filtRs[1:20], err=errR, multithread=TRUE)
+
+mergers <- mergePairs(dadaFs, filtFs[1:20], dadaRs, filtRs[1:20], verbose=TRUE)
+seqtab <- makeSequenceTable(mergers)
+
+seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% 248:260]
+
+seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE)
+
+table(nchar(getSequences(seqtab.nochim)))
+
+sum(seqtab.nochim)/sum(seqtab)
+
+track2 <- cbind(out[1:20], sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+```
+
+
+```{r}
+newFs <- list.files("/home/data/trimmed/filtered", pattern="_F_filt.fastq.gz")
+
+sample.names = str_remove(basename(newFs), "_F_filt.fastq.gz")
+
+mergers <- vector("list", length(sample.names))
+names(mergers) <- sample.names
+for(sam in sample.names) {
+  cat("Processing:", sam, "\n")
+    derepF <- derepFastq(filtFs[[sam]])
+    ddF <- dada(derepF, err=errF, multithread=TRUE)
+    derepR <- derepFastq(filtRs[[sam]])
+    ddR <- dada(derepR, err=errR, multithread=TRUE)
+    merger <- mergePairs(ddF, derepF, ddR, derepR)
+    mergers[[sam]] <- merger
+}
+
+rm(derepF); rm(derepR)
+
+seqtab <- makeSequenceTable(mergers)
+
+seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% 251:255]
+
+rm(seqtab)
+
+saveRDS(seqtab2, "~/seqtab.RDS")
+
+table(nchar(getSequences(seqtab2)))
+
+seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE)
+
+saveRDS(seqtab.nochim, "~/seqtab.nochim.RDS")
+```
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+track =  data.frame(track)
+head(track)
+```
+
+```{bash, include = F}
+wget http://www2.decipher.codes/Classification/TrainingSets/SILVA_SSU_r138_2019.RData -P ./silvadb
+```
+
+```{r}
+library(DECIPHER)
+dna <- DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from the ASVs
+
+load("~/silvadb/SILVA_SSU_r138_2019.RData")
+
+ids <- IdTaxa(dna, trainingSet, strand="top", processors=30, verbose=FALSE)
+
+ranks <- c("domain", "phylum", "class", "order", "family", "genus") # ranks of interest
+
+# Convert the output object of class "Taxa" to a matrix analogous to the output from assignTaxonomy
+taxid <- t(sapply(ids, function(x) {
+        m <- match(ranks, x$rank)
+        taxa <- x$taxon[m]
+        taxa[startsWith(taxa, "unclassified_")] <- NA
+        taxa
+}))
+colnames(taxid) <- ranks; rownames(taxid) <- getSequences(seqtab.nochim)
+
+saveRDS(taxid, "~/taxid.RDS")
+```
+
+```{r}
+seqtab.nochim = readRDS("~/seqtab.nochim.RDS")
+taxid = readRDS("~/taxid.RDS")
+sampleDF = read.csv("~/mouseenv/mouse16SmetaD.csv")
+
+rownames(sampleDF) = sampleDF$SampleName
+```
+
+```{r}
+colSums(t(seqtab.nochim) != 0)
+rowSums(seqtab.nochim)
+```
+
+##Creation of tree
+```{bash, make a tree with SEPP using gg backbone tree}
+wget  "https://raw.github.com/smirarab/sepp-refs/master/gg/sepp-package.tar.bz"
+
+tar xvfj sepp-package.tar.bz
+
+cd sepp-package/sepp
+
+python3 setup.py config -c
+```
+
+```{r, make list of sequences in fasta file for tree making}
+uniques=getUniques(seqtab.nochim)
+
+sequences=names(uniques)
+
+uniquesToFasta(uniques,fout = "~/mouseenv/seqs.fasta", ids=sequences)
+```
+
+```{bash}
+./sepp-package/run-sepp.sh sepp-package/test.frag test-gg
+```
+
+```{bash}
+./sepp-package/run-sepp.sh ./seqs.fasta MOUSE
+```
+
+```{r, view tree file with ggtree}
+seq.tree = read.tree(file = "~/mouseenv/MOUSE_placement.tog.relabelled.tre") %>%
+  keep.tip(., sequences)
+```
+
+```{r}
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(sampleDF), 
+               tax_table(taxid),
+              phy_tree(seq.tree))
+
+saveRDS(ps, "~/mouseenv/ps.RDS")
+
+ps = readRDS("~/mouseenv/ps.RDS")
+
+ps.Bact=subset_taxa(ps, domain=="Bacteria") %>%
+  prune_species(speciesSums(.) > 0, .) 
+```
+
+```{r}
+vegan_otu <- function(physeq) {
+    OTU <- otu_table(physeq)
+    if (taxa_are_rows(OTU)) {
+        OTU <- t(OTU)
+    }
+    return(as(OTU, "matrix"))
+}
+```
+
+
+```{r}
+library(ggplot2)
+
+neg = ifelse(sample_data(ps.Bact)$SampleType == "Blank", T, F)
+
+contamdf.prev <- isContaminant(ps.Bact, method="prevalence", neg=neg, threshold = 0.5)
+
+table(contamdf.prev$contaminant)
+
+hist(contamdf.prev$p, 100, ylim = c(0,5000), xlim = c(0,1))
+
+ps.noncontam = prune_taxa(!contamdf.prev$contaminant, ps.Bact)
+
+ps.final = subset_samples(ps.noncontam, sample_data(ps)$SampleType != "Blank")%>%
+  prune_species(speciesSums(.) > 0, .) 
+
+min(sample_sums(ps.final))
+
+# Number ASVs and store the exact sequences in the reference sequence slot - can access with refseq(ps)
+dna <- Biostrings::DNAStringSet(taxa_names(ps.final))
+names(dna) <- taxa_names(ps.final)
+ps.final <- merge_phyloseq(ps.final, dna)
+taxa_names(ps.final) <- paste0(seq(ntaxa(ps.final)))
+ps.final
+remove(dna)
+
+rm(ps.Bact,ps.noncontam,neg,ps, contamdf.prev)
+```
+
+```{r, environment-lung connection}
+ps.lung = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Lung" & sample_data(ps.final)$Rep == "A") %>%
+  subset_taxa(., phylum != "NA") %>%
+  prune_species(speciesSums(.) > 0, .) 
+
+table(tax_table(ps.lung)[, "phylum"], exclude = NULL)
+
+min(sample_sums(ps.lung))
+
+plot_richness(ps.lung, x = "SampleName", measures = "Observed")
+
+ps.lung.r = transform_sample_counts(ps.lung, function(x) x/sum(x)) %>%
+  prune_species(speciesSums(.) > 0, .)
+
+ps.lung.HI.r = subset_samples(ps.lung, sample_data(ps.lung)$Flu == "HI") %>%
+  transform_sample_counts(., function(x) x/sum(x)) %>%
+  prune_species(speciesSums(.) > 0, .)
+
+ordinate(ps.lung.r, method = "NMDS", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.lung.r, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  facet_grid(~Flu) + 
+  ggtitle("Lung microbiome, NMDS, Bray-Curtis")
+
+ordinate(ps.lung.r, method = "PCoA", distance = "bray") %>%
+  plot_ordination(ps.lung.r, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("Lung HI microbiome, PCoA, Bray-Curtis")
+
+PermDF = data.frame(sample_data(ps.lung.r))
+BetaD=vegdist(vegan_otu(ps.lung.r), "bray")
+#permanova by soil
+adonis(BetaD~Soil*Flu, permutations = 999, data=PermDF)
+
+PermDF = data.frame(sample_data(ps.lung.HI.r))
+BetaD=vegdist(vegan_otu(ps.lung.HI.r), "bray")
+#permanova by soil
+adonis(BetaD~Soil, permutations = 999, data=PermDF)
+
+###########
+look for outlier, might be sample 315
+
+ps.road = subset_samples(ps.lung.r, sample_data(ps.lung.r)$Soil == "Road")
+
+plot_bar(ps.road, fill="phylum")
+
+subset_samples(ps.lung.HI.r, sample_data(ps.lung.HI.r)$SampleNumber != "S315") %>%
+ordinate(., method = "NMDS", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.lung, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("Lung HI microbiome, NMDS, Bray-Curtis")
+
+subset_samples(ps.lung.HI.r, sample_data(ps.lung.HI.r)$SampleNumber != "S315") %>%
+ordinate(., method = "PCoA", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.lung, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("Lung HI microbiome, NMDS, Bray-Curtis")
+
+#Shannon diversity of HI samples
+Shannon.result = estimate_richness(ps.lung.HI.r, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+lungDF = sample_data(ps.lung.HI.r)
+Shannon = cbind(lungDF, Shannon.result)
+
+ggplot(Shannon, aes(SampleType, Shannon, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank())+ 
+  facet_grid(~Flu) + 
+  ggtitle("Shannon Diversity of Lung samples")
+
+#Observed richness of HI samples
+Observed.result = estimate_richness(ps.lung, measures = "Observed")
+
+Observed.result$Samples = rownames(Observed.result)
+lungDF = sample_data(ps.lung)
+Observed = cbind(lungDF, Observed.result) %>%
+  subset(., Flu == "HI")
+
+ggplot(Observed, aes(SampleType, Observed, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank())+ 
+  facet_grid(~Flu) + 
+  ggtitle("Observed Richness of Lung samples")
+
+#Faith's PD of HI Samples
+sample = vegan_otu(ps.lung.HI.r)
+tree = phy_tree(ps.lung.HI.r)
+pd.result = pd(sample, tree)
+
+lungDF = sample_data(ps.lung) %>%
+  subset(., Flu == "HI")
+
+FPD = cbind(pd.result, lungDF) 
+
+ggplot(FPD, aes(SampleType, PD, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank()) + 
+  ggtitle("Faith's PD of Lung samples")
+
+#########################################
+
+ordinate(ps.lung.r, method = "NMDS", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.lung, ., type="samples", color = "Soil", shape = "Flu") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("Lung microbiome, NMDS, Bray-Curtis")
+
+ordinate(ps.lung.r, method = "PCoA", distance = "bray") %>%
+  plot_ordination(ps.lung, ., type="samples", color = "Soil", shape = "Flu") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("Lung microbiome, PCoA, Bray-Curtis")
+
+ordinate(ps.lung.r, method = "NMDS", distance = "wunifrac") %>%
+  plot_ordination(ps.lung, ., type="samples", color = "Soil", shape = "Flu") +
+  theme_classic() +
+  stat_ellipse(aes(color = "Flu"))
+
+Shannon.result = estimate_richness(ps.lung.r, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+lungDF = sample_data(ps.lung)
+Shannon = cbind(lungDF, Shannon.result)
+
+ggplot(Shannon, aes(SampleType, Shannon, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(~Flu)
+
+
+
+######
+sample = vegan_otu(ps.lung.r)
+tree = phy_tree(ps.lung.r)
+pd.result = pd(sample, tree)
+
+FPD = cbind(pd.result, lungDF) 
+
+ggplot(FPD, aes(SampleType, PD, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(~Flu)
+```
+
+```{r}
+lungDF = lungDF %>%
+  data.frame(.)
+
+metaDFb = read.csv("~/mouseenv/MouseLungMetaData.csv") %>%
+  rename(., "Virus" = "Flu")
+
+corDF = merge(lungDF, metaDFb, by = c("Soil","Cohort","Flu", "Ear"))
+
+rownames(corDF) = corDF$SampleName
+list = rownames(corDF)
+shannonb = Shannon.result[list,]
+
+cordDFb = cbind(corDF, shannonb$Shannon)
+
+cordDFbPR8 = subset(cordDFb, cordDFb$Flu == "PR8")
+
+cordDFbHI = subset(cordDFb, cordDFb$Flu == "HI")
+
+ggplot(cordDFbPR8, aes(x = Neutrophils, y = shannonb$Shannon)) + 
+  geom_point()
+
+ggplot(cordDFbHI, aes(x = Neutrophils, y = shannonb$Shannon)) + 
+  geom_point() 
+```
+
+```{r}
+ps.lung.pine.r = subset_samples(ps.lung.r, sample_data(ps.lung.r)$Soil == "Pine")
+
+filtsoil = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+  prune_species(speciesSums(.) > 0, .) %>%
+  filter_taxa(., function(x) mean(x) > 1e-5, TRUE)
+
+filtsoil = phyloseq(otu_table(filtsoil),
+                    tax_table(filtsoil),
+                    sample_data(filtsoil))
+
+ps.lung.pine.r = phyloseq(otu_table(ps.lung.pine.r),
+                    tax_table(ps.lung.pine.r),
+                    sample_data(ps.lung.pine.r))
+
+sample_data(filtsoil)$Class = paste(sample_data(filtsoil)$Soil, sample_data(filtsoil)$SampleType, sep = "_")
+sample_data(ps.lung.pine.r)$Class = "Pine"
+
+mergeps = merge_phyloseq(ps.lung.pine.r, filtsoil)
+
+ps_venn(mergeps, group = "Class", relative = T, weight = F)
+```
+
+
+```{r, SVM}
+filtsoil = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+  prune_species(speciesSums(.) > 0, .) %>%
+  filter_taxa(., function(x) mean(x) > 1e-4, TRUE)
+
+filtsoil = phyloseq(otu_table(filtsoil),
+                    tax_table(filtsoil),
+                    sample_data(filtsoil))
+
+ps.lung.r2 = phyloseq(otu_table(ps.lung.r),
+                    tax_table(ps.lung.r),
+                    sample_data(ps.lung.r))
+
+mergeps = merge_phyloseq(ps.lung.r2, filtsoil)
+
+mergeps.soil = subset_samples(mergeps, sample_data(mergeps)$SampleType == "Soil")
+
+mergeps.lung = subset_samples(mergeps, sample_data(mergeps)$SampleType == "Lung")
+
+soilOTU = vegan_otu(mergeps.soil) %>%
+  data.frame(.)
+
+lungOTU = vegan_otu(mergeps.lung)
+
+soilDF = sample_data(mergeps.soil)
+
+soilOTU$Soil = soilDF$Soil
+
+library(caret)
+
+gc_ctrl1 <- trainControl(method = "repeatedcv",
+                    number = 5,
+                    repeats = 5,
+                    classProbs = TRUE,
+                    summaryFunction = multiClassSummary,
+                    savePredictions = TRUE)
+
+set.seed(42)
+
+gc_train1 <- train(Soil~., soilOTU,
+              method = "svmRadial",
+              # train() use its default method of calculating an analytically derived estimate for sigma
+              tuneLength = 5,# 5 arbitrary values for C and sigma = 25 models
+              trControl = gc_ctrl1,
+              preProc = c("center", "scale"),
+              metric = "ROC",
+              verbose = FALSE)
+
+library(kernlab)
+
+gc_train1$finalModel
+
+plot(gc_train1)
+
+mean(gc_train1$results[,"AUC"])
+
+test_pred <- predict(gc_train1, newdata = lungOTU)
+
+lungDF = sample_data(mergeps.lung)
+
+lungDF$Soil = as.factor(lungDF$Soil)
+levels(test_pred)
+
+confusionMatrix(lungDF$Soil, test_pred)
+
+#############
+cfm = confusionMatrix(PigSVMClass$Farm, test_pred)
+library(scales)
+g=ggplot(data = as.data.frame(cfm$table) ,
+  aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = log(Freq)), colour = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  geom_text(aes(x = Prediction, y = Reference, label = Freq)) +
+  theme(legend.position = "none") +
+  ggtitle("Accuracy 86% Kappa 66%")
+ggsave(file="~/PigLungs/PublicationFigures/ConfusionMatrix.PDF", g, width = 20, height = 20, units = "cm")
+saveRDS(gc_train1, "~/PigLungs/SVMmodel.RDS")
+```
+
+```{r}
+ps.soil = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Soil") %>%
+  prune_species(speciesSums(.) > 0, .) 
+
+ps.soil.r = transform_sample_counts(ps.soil, function(x) x/sum(x)) %>%
+  prune_species(speciesSums(.) > 0, .)
+
+soilDF = sample_data(ps.soil) %>%
+  data.frame(.)
+
+sample_data(ps.soil.r)$Time = as.factor(soilDF$Time)
+
+subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time != "14") %>%
+ordinate(., method = "NMDS", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.soil, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse()+ 
+  facet_grid(~Time) + 
+  ggtitle("NMDS, Bray-Curtis of Soil samples by time")
+
+subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time != "14") %>%
+ordinate(., method = "PCoA", distance = "bray") %>%
+  plot_ordination(ps.soil, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse()+ 
+  facet_grid(~Time) + 
+  ggtitle("PCoA, Bray-Curtis of Soil samples by time")
+
+PermDF = data.frame(sample_data(ps.soil.r))
+BetaD=vegdist(vegan_otu(ps.soil.r), "bray")
+#permanova by soil
+adonis(BetaD~Soil*Time, permutations = 999, data=PermDF)
+
+
+PermDF = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+  sample_data(.) %>%
+  data.frame(.)
+
+BetaD = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+  vegan_otu(.) %>%
+  vegdist(., "bray")
+
+#permanova by soil
+adonis(BetaD~Soil*Flu, permutations = 999, data=PermDF)
+
+#####################
+
+#Shannon diversity
+Shannon.result = estimate_richness(ps.soil.r, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+soilDF = sample_data(ps.soil.r)
+Shannon = cbind(soilDF, Shannon.result) %>%
+  subset(., Time != "14")
+
+ggplot(Shannon, aes(SampleType, Shannon, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank())+ 
+  facet_grid(~Time) + 
+  ggtitle("Shannon Diversity of Soil samples")
+
+#Observed richness of HI samples
+Observed.result = estimate_richness(ps.soil, measures = "Observed")
+
+Observed.result$Samples = rownames(Observed.result)
+soilDF = sample_data(ps.soil.r)
+Observed = cbind(soilDF, Observed.result) %>%
+  subset(., Time != "14")
+
+ggplot(Observed, aes(SampleType, Observed, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank())+ 
+  facet_grid(~Time) + 
+  ggtitle("Observed Richness of Soil samples")
+
+#Faith's PD of HI Samples
+sample = vegan_otu(ps.soil.r)
+tree = phy_tree(ps.soil.r)
+pd.result = pd(sample, tree)
+
+soilDF = sample_data(ps.soil.r) 
+
+FPD = cbind(pd.result, soilDF) %>%
+  subset(., Time != "14")
+
+ggplot(FPD, aes(SampleType, PD, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank()) + 
+  ggtitle("Faith's PD of Soil samples")+ 
+  facet_grid(~Time) 
+
+#####################
+Shannon.result = estimate_richness(ps.soil, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+
+Shannon = cbind(soilDF, Shannon.result)
+
+ggplot(Shannon, aes(Time, Shannon, fill = Soil)) + 
+  geom_boxplot() +expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(~Soil)
+
+sample = vegan_otu(ps.soil)
+tree = phy_tree(ps.soil)
+pd.result = pd(sample, tree)
+
+FPD = cbind(pd.result, soilDF) 
+
+FPD$Time = as.factor(FPD$Time)
+
+ggplot(FPD, aes(Time, PD, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(~Soil)
+
+ShannonD0 = subset(Shannon, Time < 1)
+
+ggplot(ShannonD0, aes(Soil, Shannon, fill = Soil)) + 
+  geom_boxplot() +expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())
+```
+
+```{r, correlation with cage-lung}
+#######
+Shannon.result = estimate_richness(ps.lung.r, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.lung)
+lungDF = sample_data(ps.lung)
+Shannon.lung = cbind(lungDF, Shannon.result)
+
+Shannon.lung$join = paste(Shannon.lung$Soil, Shannon.lung$Cohort, Shannon.lung$Flu)
+#######
+Shannon.result = estimate_richness(ps.soil.r, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+soilDF = sample_data(ps.soil.r)
+Shannon.soil = cbind(soilDF, Shannon.result) %>%
+  subset(., Time == "35")
+
+Shannon.soil$join = paste(Shannon.soil$Soil, Shannon.soil$Cohort, Shannon.soil$Flu)
+
+Shannon.soil = select(Shannon.soil, Shannon, join)
+
+corDF = merge(Shannon.lung, Shannon.soil, by = "join") %>%
+  subset(., Flu == "HI")
+
+ggplot(corDF, aes(x = Shannon.x, y = Shannon.y)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  theme_minimal() + 
+  ylab("Cage Diversity")+ 
+  xlab("Lung Diversity")
+
+corDF = merge(Shannon.lung, Shannon.soil, by = "join") %>%
+  subset(., Flu == "PR8")
+
+ggplot(corDF, aes(x = Shannon.x, y = Shannon.y)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  theme_minimal() + 
+  ylab("Cage Diversity")+ 
+  xlab("Lung Diversity")
+```
+
+
+```{r}
+ps.fecal = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Fecal") %>%
+  subset_taxa(., phylum != "NA") %>%
+  prune_species(speciesSums(.) > 0, .) 
+
+table(tax_table(ps.fecal)[, "phylum"], exclude = NULL)
+
+min(sample_sums(ps.fecal))
+
+ps.fecal.r = transform_sample_counts(ps.fecal, function(x) x/sum(x)) %>%
+  prune_species(speciesSums(.) > 0, .)
+
+fecalDF = sample_data(ps.fecal.r)
+
+sample_data(ps.fecal.r)$Time = as.factor(fecalDF$Time)
+
+ordinate(ps.fecal.r, method = "NMDS", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.fecal, ., type="samples", color = "Soil", shape = "Flu") +
+  theme_minimum() +
+  stat_ellipse()+ 
+  facet_grid(~Time)
+
+#################################
+PermDF = data.frame(sample_data(ps.fecal.r))
+BetaD=vegdist(vegan_otu(ps.fecal.r), "bray")
+#permanova by soil
+adonis(BetaD~Soil*Time*Flu, permutations = 999, data=PermDF)
+
+
+PermDF = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+  sample_data(.) %>%
+  data.frame(.)
+
+BetaD = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+  vegan_otu(.) %>%
+  vegdist(., "bray")
+
+#permanova by soil
+adonis(BetaD~Soil*Flu, permutations = 999, data=PermDF)
+
+##################################
+Shannon.result = estimate_richness(ps.fecal, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+
+fecalDF = sample_data(ps.fecal)
+
+Shannon = cbind(fecalDF, Shannon.result)
+
+Shannon$Time = as.factor(Shannon$Time)
+
+ggplot(Shannon, aes(Time, Shannon, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(Flu~Soil)
+
+sample = vegan_otu(ps.fecal)
+tree = phy_tree(ps.fecal)
+pd.result = pd(sample, tree)
+
+FPD = cbind(pd.result, fecalDF) 
+
+FPD$Time = as.factor(FPD$Time)
+
+ggplot(FPD, aes(Time, PD, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(Flu~Soil)
+```
+
+```{r}
+ps.FW = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Water" | sample_data(ps.final)$SampleType == "Food") %>%
+  prune_species(speciesSums(.) > 0, .) 
+
+ordinate(ps.FW, method = "NMDS", distance = "bray", trymax = 1000) %>%
+  plot_ordination(ps.FW, ., type="samples", color = "SampleType") +
+  theme_classic() +
+  stat_ellipse()
+
+Shannon.result = estimate_richness(ps.FW, measures = "Shannon")
+
+Shannon.result$Samples = rownames(Shannon.result)
+lungDF = sample_data(ps.lung)
+Shannon = cbind(lungDF, Shannon.result)
+
+ggplot(Shannon, aes(SampleType, Shannon, fill = Soil)) + 
+  geom_boxplot() +expand_limits(y=0)  + 
+  theme_minimal() +
+  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
+  xlab(element_blank())+ 
+  facet_grid(~Flu)
+```
+
+
+
+```{r}
+DF = out$parameters$betaTable %>%
+  subset(., sig95 == "*") 
+
+DF$names = rownames(DF)
+  
+DF = DF %>%
+  tidyr::separate(names, c("ASV", "Parameter"), sep = "_") 
+```
+
+```{r}
+install.package("phylofactor")
+library(phylofactor)
+
+filter <- phyloseq::genefilter_sample(ps.lung, filterfun_sample(function(x) x >= 1), A = 0.05*nsamples(ps.lung))
+
+ps.PF <- prune_taxa(filter, ps.lung)
+
+sample = otu_table(ps.PF) %>%
+  t(.) %>%
+  as.data.frame(.) 
+
+tree = phy_tree(ps.PF)
+
+tree = unroot(tree)
+
+tree <- makeNodeLabel(tree, method="number", prefix='n')
+
+sampleDF = sample_data(ps.PF) %>%
+  data.frame(.) %>%
+  select(., Soil, Flu)
+
+sampleDF$Soil = as.factor(sampleDF$Soil)
+sampleDF$Flu = as.factor(sampleDF$Flu)
+
+taxtab = as.data.frame(t(tax_table(ps.PF)))
+
+PF=PhyloFactor(t(otu_table(ps.PF)),phy_tree(ps.PF),sample_data(ps.PF),nfactors=10, frmla = Data ~ Soil*Flu,  ncores = 12)
+
+PF
+
+
+```
+
+```{r}
+tree
+```
+
