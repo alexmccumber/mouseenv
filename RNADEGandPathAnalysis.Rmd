@@ -59,6 +59,10 @@ all(rownames(metaDF) == colnames(countmat))
 metaDF$unique = paste(metaDF$ID, metaDF$Lane, sep = ".")
 
 metaDF$group = paste0(metaDF$SoilType, metaDF$Virus)
+
+metaDF$SoilType = factor(metaDF$SoilType, levels = c("Control", "Pine", "River", "Road"))
+
+metaDF$Virus = factor(metaDF$Virus, levels = c("HI", "PR8"))
 ```
 
 #look at PR8 vs. HI mice
@@ -84,10 +88,12 @@ library(tidyverse)
 require(DESeq2)
 ddsDE <- DESeq(ddsColl)
 
+resultsNames(ddsDE)
+
 res <- results(ddsDE)
 
 #No significant results for road
-summary(results(ddsDE, name = "SoilTypeRiver.VirusPR8"))
+summary(results(ddsDE, name = "SoilTypeRoad.VirusPR8"))
 
 #1226 diff expressed genes
 ResSoilRiver = results(ddsDE, name = "SoilTypeRiver.VirusPR8", tidy = T) %>%
@@ -115,12 +121,15 @@ BiocManager::install("geneLenDataBase")
 BiocManager::install("EnsDb.Mmusculus.v79")
 
 BiocManager::install("org.Mm.eg.db")
+
+BiocManager::install("gage")
 ```
 
 ```{r}
 library("goseq")
 library("geneLenDataBase")
 library("EnsDb.Mmusculus.v79")
+library("gage")
 ```
 
 ```{r}
@@ -135,7 +144,7 @@ kegg.sigmet.gs <- kg.mm$kg.sets[kg.mm$sigmet.idx]
 kegg.dise.gs <- kg.mm$kg.sets[kg.mm$dise.idx]
 
 # set up go database
-go.mm2 <- go.gsets(species="mouse")
+go.mm <- go.gsets(species="mouse")
 go.bp.gs <- go.mm$go.sets[go.mm$go.subs$BP]
 go.mf.gs <- go.mm$go.sets[go.mm$go.subs$MF]
 go.cc.gs <- go.mm$go.sets[go.mm$go.subs$CC]
@@ -162,15 +171,15 @@ ResSoilRiver$entrez <- mapIds(org.Mm.eg.db, keys=ResSoilRiver$row, column="ENTRE
 ResSoilRiver$name <- mapIds(org.Mm.eg.db, keys=ResSoilRiver$row, column="GENENAME", keytype="ENSEMBL", multiVals="first")
 ResSoilRiver$Soil = "River"
 
-Delta_DGE = rbind(ResSoilPine, ResSoilRiver, ResSoilRoad)
-write.csv(Delta_DGE, "~/mouseenv/Delta_DGE.csv")
+Delta_DGE = rbind(ResSoilPine, ResSoilRiver)
+write.csv(Delta_DGE, "~/mouseenv/RNASeqRes/soilXvirusDelta/DeltaSoil_DGE.csv")
 
 ResSoilPR8$symbol <- mapIds(org.Mm.eg.db, keys=ResSoilPR8$row, column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 ResSoilPR8$entrez <- mapIds(org.Mm.eg.db, keys=ResSoilPR8$row, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
 ResSoilPR8$name <- mapIds(org.Mm.eg.db, keys=ResSoilPR8$row, column="GENENAME", keytype="ENSEMBL", multiVals="first")
 ResSoilPR8$Soil = "PR8_v_HI"
 
-write.csv(ResSoilPR8, "~/mouseenv/PR8vHI_DGE.csv")
+write.csv(ResSoilPR8, "~/mouseenv/RNASeqRes/soilXvirusDelta/PR8vHI_DGE.csv")
 ```
 
 #New object for kegg and go pathways
@@ -183,7 +192,7 @@ names(ResRiver.fc) <- ResSoilRiver$entrez
 ```
 
 #Run gage on kegg and go for Pine samples
-```{r}
+```{r, no GO terms or KEGG pathways for Pine samples, need not run}
 # Run enrichment analysis on all log fc
 # sigmet - signaling or metabolism pathways
 # dise - disease pathways
@@ -268,6 +277,8 @@ fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less) %>%
 fc.kegg.sigmet.p.ND = as.data.frame(fc.kegg.sigmet.p.ND)
 fc.kegg.dise.p.ND = as.data.frame(fc.kegg.dise.p.ND)
 
+write.csv(fc.kegg.sigmet.p.up, "~/mouseenv/RNASeqRes/soilXvirusDelta/Delta_River_KEGG.csv")
+
 # convert the go results to data frames
 # bp - biological processes, mf - molecular function, cc - cellular processes
 fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater) %>%
@@ -293,12 +304,12 @@ fc.go.cc.p.up$process = "cc"
 
 PR8_River_GOterm = rbind(fc.go.bp.p.up, fc.go.mf.p.up, fc.go.cc.p.up)
 
-write.csv(PR8_River_GOterm, "~/mouseenv/Delta_River_GOterm.csv")
+write.csv(PR8_River_GOterm, "~/mouseenv/RNASeqRes/soilXvirusDelta/Delta_River_GOterm.csv")
 ```
 
 #install pathview
 ```{r}
-#BiocManager::install("pathview")
+BiocManager::install("pathview")
 library(pathview)
 ```
 
@@ -390,7 +401,7 @@ ResSoilRiver$name <- mapIds(org.Mm.eg.db, keys=ResSoilRiver$row, column="GENENAM
 ResSoilRiver$Soil = "River"
 
 HI_DGE = rbind(ResSoilPine, ResSoilRiver)
-write.csv(HI_DGE, "~/mouseenv/HI_DGE.csv")
+write.csv(HI_DGE, "~/mouseenv/RNASeqRes/HIBaseline/HI_DGE.csv")
 ```
 
 #New object for kegg and go pathways (River and Pine)
@@ -563,7 +574,7 @@ ResSoilRoad$name <- mapIds(org.Mm.eg.db, keys=ResSoilRoad$row, column="GENENAME"
 ResSoilRoad$Soil = "Road"
 
 PR8_DGE = rbind(ResSoilPine, ResSoilRiver, ResSoilRoad)
-write.csv(HI_DGE, "~/mouseenv/HI_DGE.csv")
+write.csv(PR8_DGE, "~/mouseenv/RNASeqRes/PR8Baseline/PR8_DGE.csv")
 ```
 
 #New object for kegg and go pathways (River and Pine)
@@ -607,6 +618,8 @@ fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less) %>%
 fc.kegg.sigmet.p.ND = as.data.frame(fc.kegg.sigmet.p.ND)
 fc.kegg.dise.p.ND = as.data.frame(fc.kegg.dise.p.ND)
 
+write.csv(fc.kegg.dise.p.up, "~/mouseenv/RNASeqRes/PR8Baseline/PR8_Pine_KEGG.csv")
+
 # convert the go results to data frames
 # bp - biological processes, mf - molecular function, cc - cellular processes
 fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater) %>%
@@ -632,7 +645,7 @@ fc.go.cc.p.up$process = "cc"
 
 PR8_Pine_GOterm = rbind(fc.go.bp.p.up, fc.go.mf.p.up, fc.go.cc.p.up)
 
-write.csv(PR8_Pine_GOterm, "~/mouseenv/PR8_Pine_GOterm.csv")
+write.csv(PR8_Pine_GOterm, "~/mouseenv/RNASeqRes/PR8Baseline/PR8_Pine_GOterm.csv")
 ```
 
 #Run gage on kegg and go for River samples
@@ -664,6 +677,8 @@ fc.kegg.dise.p.down <- as.data.frame(fc.kegg.dise.p$less) %>%
 fc.kegg.sigmet.p.ND = as.data.frame(fc.kegg.sigmet.p.ND)
 fc.kegg.dise.p.ND = as.data.frame(fc.kegg.dise.p.ND)
 
+write.csv(fc.kegg.dise.p.up, "~/mouseenv/RNASeqRes/PR8Baseline/PR8_River_KEGG.csv")
+
 # convert the go results to data frames
 # bp - biological processes, mf - molecular function, cc - cellular processes
 fc.go.bp.p.up <- as.data.frame(fc.go.bp.p$greater) %>%
@@ -689,7 +704,7 @@ fc.go.cc.p.up$process = "cc"
 
 PR8_River_GOterm = rbind(fc.go.bp.p.up, fc.go.mf.p.up, fc.go.cc.p.up)
 
-write.csv(PR8_River_GOterm, "~/mouseenv/PR8_River_GOterm.csv")
+write.csv(PR8_River_GOterm, "~/mouseenv/RNASeqRes/PR8Baseline/PR8_River_GOterm.csv")
 ```
 
 ```{r}
