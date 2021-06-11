@@ -1,0 +1,80 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{bash}
+zcat /home/data/16Sfiles/Blank_1_S377_L002_R1_001.fastq.gz | head -n 20
+```
+
+```{r}
+# Directories
+fastq.dir = file.path("/home/data/16Sfiles")
+trimmed.dir = file.path("/home/data/trimmed")
+
+# Set variables for bash
+Sys.setenv(FASTQ_DIR = fastq.dir)
+Sys.setenv(TRIMMED_DIR = trimmed.dir)
+```
+
+```{bash}
+$HOME/.local/bin/cutadapt -g XTCGCATA -o $TRIMMED_DIR/Fecal_Ctrl.trimmed.fastq.gz $FASTQ_DIR/Fecal_Ctrl_C_PR8_35_L_S201_L002_R1_001.fastq.gz
+```
+
+
+```{bash}
+mkdir $TRIMMED_DIR
+
+for FASTQ in $FASTQ_DIR/*_001.fastq.gz
+  do
+    FASTQ_BASE="$(basename ${FASTQ} '_001.fastq.gz')"
+    echo "---------------- TRIMMING: $FASTQ ----------------"
+    $HOME/.local/bin/cutadapt -g XTCGCATA -o $TRIMMED_DIR/${FASTQ_BASE}.trim.fastq.gz $FASTQ >>/home/data/cutadapt.txt
+    done
+```
+
+```{r}
+# Directories
+fastq.dir = file.path("/home/data/16SGut")
+trimmed.dir = file.path("/home/data/trimmedGut")
+
+# Set variables for bash
+Sys.setenv(FASTQ_DIR = fastq.dir)
+Sys.setenv(TRIMMED_DIR = trimmed.dir)
+```
+
+```{bash}
+mkdir $TRIMMED_DIR
+
+for FASTQ in $FASTQ_DIR/*_L00[2]_R1_001.fastq.gz
+    do
+        FASTQ_BASE="$(basename ${FASTQ} '_R1_001.fastq.gz')"
+        echo "---------------- TRIMMING: $FASTQ_BASE ----------------"
+        fastq-mcf \
+            $HOME/mouseenv2/adapters.fasta \
+            $FASTQ_DIR/${FASTQ_BASE}_R1_001.fastq.gz \
+            $FASTQ_DIR/${FASTQ_BASE}_R2_001.fastq.gz \
+            -q 1 \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R1_001.trim.fastq.gz \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R2_001.trim.fastq.gz >> /home/data/fastqmcfNova.txt
+  done
+```
+
+```{bash}
+mkdir $TRIMMED_DIR
+
+for FASTQ in $FASTQ_DIR/*_L00[1]_R1_001.fastq.gz
+    do
+        FASTQ_BASE="$(basename ${FASTQ} '_R1_001.fastq.gz')"
+        echo "---------------- TRIMMING: $FASTQ_BASE ----------------"
+        fastq-mcf \
+            $HOME/mouseenv2/adapters.fasta \
+            $FASTQ_DIR/${FASTQ_BASE}_R1_001.fastq.gz \
+            $FASTQ_DIR/${FASTQ_BASE}_R2_001.fastq.gz \
+            -q 1 \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R1_001.trim.fastq.gz \
+            -o $TRIMMED_DIR/${FASTQ_BASE}_R2_001.trim.fastq.gz >> /home/data/fastqmcfGut.txt
+  done
+```
+
+

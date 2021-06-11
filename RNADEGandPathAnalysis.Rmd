@@ -88,12 +88,14 @@ library(tidyverse)
 require(DESeq2)
 ddsDE <- DESeq(ddsColl)
 
+#saveRDS(ddsDE, "~/mouseenv/ddsDE.RDS")
+
 resultsNames(ddsDE)
 
 res <- results(ddsDE)
 
 #No significant results for road
-summary(results(ddsDE, name = "SoilTypeRoad.VirusPR8"))
+ResSoilRoad = results(ddsDE, name = "SoilTypeRoad.VirusPR8", tidy = T)
 
 #1226 diff expressed genes
 ResSoilRiver = results(ddsDE, name = "SoilTypeRiver.VirusPR8", tidy = T) %>%
@@ -109,6 +111,61 @@ ResSoilPine = results(ddsDE, name = "SoilTypePine.VirusPR8", tidy = T) %>%
 ResSoilPR8 = results(ddsDE, name = "Virus_PR8_vs_HI", tidy = T) %>%
   dplyr::filter(., padj < 0.1) %>%
   dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
+
+#Need to make a better plot here
+p=plotCounts(ddsDE, gene="ENSMUSG00000025492", intgroup=c("SoilType"), returnData =T)
+
+p$ID = rownames(p)
+
+p=merge(p, MouseLungMetaData, by = "ID")
+
+r =  ggplot(p, aes(y = count, x = SoilType, color = SoilType, shape = Flu)) +
+  geom_point(aes(size = 2, alpha = 0.8)) +
+  theme_minimal()+ 
+  theme(legend.position = "none") +
+  ylab("IFITM3 DESeq2 Normalized Counts") + 
+  xlab(NULL)
+
+p=plotCounts(ddsDE, gene="ENSMUSG00000030748", intgroup=c("SoilType"), returnData =T)
+
+p$ID = rownames(p)
+
+p=merge(p, MouseLungMetaData, by = "ID")
+
+f=ggplot(p, aes(y = count, x = SoilType, color = SoilType, shape = Flu)) +
+  geom_point(aes(size = 2, alpha = 0.8)) +
+  theme_minimal()+ 
+  theme(legend.position = "none") +
+  ylab("IL4A DESeq2 Normalized Counts") + 
+  xlab(NULL)
+
+p=plotCounts(ddsDE, gene="ENSMUSG00000032089", intgroup=c("SoilType"), returnData =T)
+
+p$ID = rownames(p)
+
+p=merge(p, MouseLungMetaData, by = "ID")
+
+g=ggplot(p, aes(y = count, x = SoilType, color = SoilType, shape = Flu)) +
+  geom_point(aes(size = 2, alpha = 0.8)) +
+  theme_minimal()+ 
+  theme(legend.position = "none") +
+  ylab("IL10RA DESeq2 Normalized Counts") + 
+  xlab(NULL)
+
+p=plotCounts(ddsDE, gene="ENSMUSG00000004371", intgroup=c("SoilType"), returnData =T)
+
+p$ID = rownames(p)
+
+p=merge(p, MouseLungMetaData, by = "ID")
+
+q=ggplot(p, aes(y = count, x = SoilType, color = SoilType, shape = Flu)) +
+  geom_point(aes(size = 2, alpha = 0.8)) +
+  theme_minimal()+ 
+  theme(legend.position = "none") +
+  ylab("IL11 DESeq2 Normalized Counts") + 
+  xlab(NULL)
+
+x = ggarrange(r,f,g,q,  labels = c("A", "B", "C", "D"), ncol = 2, nrow = 2)
 ```
 
 #annotate diff expressed genes
@@ -365,7 +422,7 @@ ResSoilRoad = results(ddsDE, name = "SoilType_Road_vs_Control", tidy = T) %>%
   dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
 
 #Need to make a better plot here
-plotCounts(ddsDE, gene="ENSMUSG00000101111", intgroup=c("SoilType"))
+plotCounts(ddsDE, gene="ENSMUSG00000025492", intgroup=c("SoilType"))
 ```
 
 ```{r}
@@ -522,23 +579,20 @@ ddsColl <- collapseReplicates(dds, dds$ID, dds$Lane)
 
 ddsDE <- DESeq(ddsColl)
 
-#results for Soil specific, 225 genes
+#results for Soil specific, 407 genes
 ResSoilPine = results(ddsDE, name = "SoilType_Pine_vs_Control", tidy = T) %>%
   dplyr::filter(., padj < 0.1) %>%
   dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
 
-#results for Soil specific, 41 genes
+#results for Soil specific, 1884 genes
 ResSoilRiver = results(ddsDE, name = "SoilType_River_vs_Control", tidy = T) %>%
   dplyr::filter(., padj < 0.1) %>%
   dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
 
-#results for Soil specific, 0 genes
+#results for Soil specific, 28 genes
 ResSoilRoad = results(ddsDE, name = "SoilType_Road_vs_Control", tidy = T) %>%
   dplyr::filter(., padj < 0.1) %>%
   dplyr::filter(., log2FoldChange >=1 | log2FoldChange <= -1)
-
-#Need to make a better plot here
-plotCounts(ddsDE, gene="ENSMUSG00000026193", intgroup=c("SoilType"))
 ```
 
 ```{r}
@@ -853,3 +907,5 @@ ggplot(results(ddsDE, contrast = c("Virus", "HI", "PR8"), tidy = TRUE),
 plotMA(res01, ylim=c(-2,2))
 ```
 #New approach: https://genviz.org/module-04-expression/0004/02/01/DifferentialExpression/
+
+

@@ -19,18 +19,14 @@ library(picante)
 library(caret)
 #install.packages("MLmetrics")
 library(MLmetrics)
-install.packages("remotes")
-remotes::install_github("Russel88/MicEco")
-require(MicEco)
-install.packages("gjam")
-library(gjam)
-remotes::install_github('reptalex/phylofactor')
-library(phylofactor)
+#install.packages("remotes")
 #BiocManager::install("ANCOMBC")
 library(ANCOMBC)
-install.packages("ggpubr")
+#install.packages("ggpubr")
 library(ggpubr)
 library(rstatix)
+#install.packages("plotly")
+library(plotly)
 ```
 
 ```{r}
@@ -91,7 +87,7 @@ errR <- learnErrors(filtRs, nbases = 1e10, multithread=TRUE)
 plotErrors(errF, nominalQ=T)
 ```
 
-```{r}
+```{r, test code}
 
 dadaFs <- dada(filtFs[1:20], err=errF, multithread=TRUE)
 dadaRs <- dada(filtRs[1:20], err=errR, multithread=TRUE)
@@ -266,10 +262,23 @@ hist(contamdf.prev$p, 100, ylim = c(0,5000), xlim = c(0,1))
 
 ps.noncontam = prune_taxa(!contamdf.prev$contaminant, ps.Bact)
 
-ps.final = subset_samples(ps.noncontam, sample_data(ps)$SampleType != "Blank")%>%
+#### Further remove contaminating sequences
+ps.Blank = subset_samples(ps.noncontam, sample_data(ps.noncontam)$SampleType == "Blank") %>%
+  prune_species(speciesSums(.) > 0, .) %>%
+  filter_taxa(., function(x) sum(x > 3) > (0.25*length(x)), TRUE)
+
+bad_taxa <- ps.Blank %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names 
+
+goodTaxa <- setdiff(taxa_names(ps.noncontam), bad_taxa)
+ps.noncontam <- prune_taxa(goodTaxa, ps.noncontam)
+
+ps.final = subset_samples(ps.noncontam, sample_data(ps.noncontam)$SampleType != "Blank" & sample_sums(ps.noncontam) > 800) %>%
   prune_species(speciesSums(.) > 0, .) 
 
-min(sample_sums(ps.final))
+min(sample_sums(ps.final2))
 
 # Number ASVs and store the exact sequences in the reference sequence slot - can access with refseq(ps)
 dna <- Biostrings::DNAStringSet(taxa_names(ps.final))
@@ -278,35 +287,55 @@ ps.final <- merge_phyloseq(ps.final, dna)
 taxa_names(ps.final) <- paste0(seq(ntaxa(ps.final)))
 ps.final
 remove(dna)
-rm(ps.Bact,ps.noncontam,neg,ps, contamdf.prev)
+rm(ps.Bact,ps.noncontam,neg,ps, ps.noncontam, contamdf.prev)
 
 saveRDS(ps.final, "~/mouseenv/ps_final.RDS")
+
+ps.final = readRDS("~/mouseenv/ps_final.RDS")
 ```
 
-```{r, environment-lung connection}
-ps.lung = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Lung" & sample_data(ps.final)$Rep == "A") %>%
+```{r, lung NMDS Shannon diversity and richness, updated #############################################}
+ps.lung = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Lung" & sample_data(ps.final)$Rep == "A" | sample_data(ps.final)$SampleNumber == "S343") %>%
   subset_taxa(., phylum != "NA") %>%
   prune_species(speciesSums(.) > 0, .) 
-
-table(tax_table(ps.lung)[, "phylum"], exclude = NULL)
 
 min(sample_sums(ps.lung))
 
 ps.lung.r = transform_sample_counts(ps.lung, function(x) x/sum(x)) %>%
   prune_species(speciesSums(.) > 0, .)
 
+y = microbiome::transform(ps.lung, "clr")
+
+z=ordinate(y, method = "RDA", distance = "euclidean") %>%
+  plot_ordination(y, ., type="samples", color = "Soil", axes = 2:3) +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("PCA of Lung Samples, Aitchison Distance") +
+  facet_grid(~Flu)
+
+PermDF = data.frame(sample_data(y))
+BetaD=phyloseq::distance(y, method = "euclidean") 
+
+#permanova by soil
+adonis(BetaD~Soil*Flu, permutations = 999, data=PermDF)
+
+plotly::plot_ly(x=z$data$PC1, y=z$data$PC2, z=z$data$PC3, type="scatter3d", mode="markers", color=z$data$Soil)
+
 set.seed(42)
-ordinate(ps.lung.r, method = "NMDS", distance = "bray", trymax = 1000) %>%
+p=ordinate(ps.lung.r, method = "NMDS", distance = "bray", trymax = 1000) %>%
   plot_ordination(ps.lung.r, ., type="samples", color = "Soil") +
   theme_minimal() +
   stat_ellipse() +
   facet_grid(~Flu) 
 
+p$stress #0.22
+
 ordinate(ps.lung.r, method = "PCoA", distance = "bray") %>%
   plot_ordination(ps.lung.r, ., type="samples", color = "Soil") +
   theme_minimal() +
   stat_ellipse() +
-  ggtitle("Lung HI microbiome, PCoA, Bray-Curtis")
+  ggtitle("Lung HI microbiome, PCoA, Bray-Curtis")+
+  facet_grid(~Flu)
 
 PermDF = data.frame(sample_data(ps.lung.r))
 BetaD=vegdist(vegan_otu(ps.lung.r), "bray")
@@ -324,7 +353,6 @@ Shannon = cbind(lungDF, Shannon.result)
 hist(Shannon$Shannon)
 ggqqplot(Shannon$Shannon)
 
-
 Shannon$logShannon = log10(max(Shannon$Shannon+1) - Shannon$Shannon)
 
 shapiro.test(Shannon$Shannon)
@@ -341,13 +369,21 @@ summary(fit)
 
 TukeyHSD(fit)
 
+r=ggplot(Shannon, aes(Soil, Shannon, fill = Soil)) + 
+  geom_boxplot() +
+  expand_limits(y=0)  + 
+  theme_minimal() +
+  xlab(element_blank())+ 
+  facet_grid(~Flu) + 
+  ylab("Shannon Diversity") 
+
 p = ggplot(Shannon, aes(Soil, logShannon, fill = Soil)) + 
   geom_boxplot() +
   expand_limits(y=0)  + 
   theme_minimal() +
   xlab(element_blank())+ 
   facet_grid(~Flu) + 
-  ylab("log(max(Diversity + 1) - Diversity") 
+  ylab("log(max(SD + 1) - SD") 
 
 #############
 
@@ -367,7 +403,7 @@ g=ggplot(Observed, aes(Soil, Observed, fill = Soil)) +
   facet_grid(~Flu) + 
   ylab("Richness")
 
-r = ggarrange(p,g, labels = c("A", "B"), nrow = 2)
+q = ggarrange(r,g, labels = c("A", "B"), nrow = 2)
 
 hist(Observed$Observed)
 ggqqplot(Observed$Observed)
@@ -375,42 +411,21 @@ ggqqplot(Observed$Observed)
 shapiro.test(Observed$Observed)
 
 fit = aov(Observed ~ Soil*Flu, data = Observed)
+
 summary(fit)
 
 TukeyHSD(fit)
+
+m = ggarrange(r, 
+              ggarrange(p,g, ncol = 2, labels = c("B", "C")), nrow = 2, labels = "A")
 ```
 
-#can likely remove
-```{r}
-lungDF = lungDF %>%
-  data.frame(.)
-
-metaDFb = read.csv("~/mouseenv/MouseLungMetaData.csv") %>%
-  rename(., "Virus" = "Flu")
-
-corDF = merge(lungDF, metaDFb, by = c("Soil","Cohort","Flu", "Ear"))
-
-rownames(corDF) = corDF$SampleName
-list = rownames(corDF)
-shannonb = Shannon.result[list,]
-
-cordDFb = cbind(corDF, shannonb$Shannon)
-
-cordDFbPR8 = subset(cordDFb, cordDFb$Flu == "PR8")
-
-cordDFbHI = subset(cordDFb, cordDFb$Flu == "HI")
-
-ggplot(cordDFbPR8, aes(x = Neutrophils, y = shannonb$Shannon)) + 
-  geom_point()
-
-ggplot(cordDFbHI, aes(x = Neutrophils, y = shannonb$Shannon)) + 
-  geom_point() 
-```
-
-```{r, soil day 0}
+```{r, soil day 0 NMDS shannon diversity and richness, updated########################################}
 #changed from ps.final
-ps.soil = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Soil") %>%
+ps.soil = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Soil" & sample_sums(ps.final) > 5000) %>%
   prune_species(speciesSums(.) > 0, .) 
+
+sample_sums(ps.soil)
 
 ps.soil.r = transform_sample_counts(ps.soil, function(x) x/sum(x)) %>%
   prune_species(speciesSums(.) > 0, .)
@@ -465,7 +480,7 @@ g=ggplot(Observed, aes(Soil, Observed, fill = Soil)) +
   scale_fill_manual(values = c("#7CAE00", "#00BFC4", "#C77CFF")) +
   xlab(element_blank())+ 
   theme(legend.position = "none")
-
+Observed$Observed
 shapiro.test(Observed$Observed)
 hist(Observed$Observed)
 
@@ -475,7 +490,7 @@ fit = aov(Observed ~ Soil, data = Observed)
 summary(fit)
 plot(fit)
 
-TukeyHSD(fit)
+TukeyHSD(fit) #Road-Pine p = 0.02
 
 #######################################
 
@@ -484,6 +499,8 @@ r=ordinate(ps.soil.0, method = "NMDS", distance = "bray", trymax = 1000) %>%
   theme_minimal() +
   scale_color_manual(values = c("#7CAE00", "#00BFC4", "#C77CFF")) +
   stat_ellipse()
+
+r$stress #0.09
 
 PermDF = data.frame(sample_data(ps.soil.0))
 BetaD=vegdist(vegan_otu(ps.soil.0), "bray")
@@ -495,9 +512,11 @@ m = ggarrange(r,
               ggarrange(p,g, ncol = 2, labels = c("B", "C")), nrow = 2, labels = "A")
 ```
 
-```{r, day 14 and 35 soils}
-ps.soil.C = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Soil" & sample_data(ps.final)$Time != "0") %>%
-  prune_species(speciesSums(.) > 0, .) 
+```{r, day 14 and 35 soils NMDS shannon diversity and richness, updated ################################}
+ps.soil.C = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Soil" & sample_data(ps.final)$Time != "0" & sample_sums(ps.final) > 5000) %>%
+  prune_species(speciesSums(.) > 0, .)
+
+min(sample_sums(ps.soil.C))
 
 Shannon.result = estimate_richness(ps.soil.C, measures = "Shannon")
 
@@ -519,7 +538,7 @@ ggqqplot(Shannon$Shannon)
 fit = aov(Shannon ~ Soil, data = Shannon)
 summary(fit)
 
-TukeyHSD(fit)
+TukeyHSD(fit) #Road-Ctrl p = 0.05, River-Ctrl p = 0.06
 
 p=ggplot(Shannon, aes(Soil, Shannon, fill = Soil)) + 
   geom_boxplot() +
@@ -537,13 +556,21 @@ soilDF = sample_data(ps.soil.C)
 Observed = cbind(soilDF, Observed.result) 
 
 hist(Observed$Observed)
+ggqqplot(Observed$Observed)
 
-kruskal.test(Observed ~ Soil, Observed)
+Observed$logObserved = log(Observed$Observed)
+hist(Observed$logObserved)
+ggqqplot(Observed$logObserved)
+
+fit = aov(logObserved ~ Soil, data = Observed)
+summary(fit)
+
+TukeyHSD(fit) #Road-Ctrl p = 0.02, Pine-Ctrl p = 0.08
 
 Observed %>%
   pairwise_wilcox_test(Observed ~ Soil, p.adjust.methods = "BH")
 
-g=ggplot(Observed, aes(Soil, Observed, fill = Soil)) + 
+g=ggplot(Observed, aes(Soil, logObserved, fill = Soil)) + 
   geom_boxplot() +
   expand_limits(y=0)  + 
   theme_minimal() +
@@ -558,6 +585,8 @@ r=ordinate(ps.soil.C, method = "NMDS", distance = "bray", trymax = 1000) %>%
   theme_minimal() +
   stat_ellipse() 
 
+r$stress #0.15
+
 PermDF = data.frame(sample_data(ps.soil.C))
 BetaD=vegdist(vegan_otu(ps.soil.C), "bray")
 
@@ -568,62 +597,10 @@ m = ggarrange(r,
               ggarrange(p,g, ncol = 2, labels = c("B", "C")), nrow = 2, labels = "A")
 ```
 
-```{r}
-PermDF = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time != "0") %>%
-  sample_data(.) %>%
-  data.frame(.)
-
-BetaD = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time != "0") %>%
-  vegan_otu(.) %>%
-  vegdist(., "bray")
-
-#permanova by soil
-adonis(BetaD~Soil*Flu*Time, permutations = 999, data=PermDF)
-
-#####################
-Shannon.result = estimate_richness(ps.soil, measures = "Shannon")
-
-Shannon.result$Samples = rownames(Shannon.result)
-
-Shannon = cbind(soilDF, Shannon.result)
-
-ggplot(Shannon, aes(Time, Shannon, fill = Soil)) + 
-  geom_boxplot() +expand_limits(y=0)  + 
-  theme_minimal() +
-  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
-  xlab(element_blank())+ 
-  facet_grid(~Soil)
-
-sample = vegan_otu(ps.soil)
-tree = phy_tree(ps.soil)
-pd.result = pd(sample, tree)
-
-FPD = cbind(pd.result, soilDF) 
-
-FPD$Time = as.factor(FPD$Time)
-
-ggplot(FPD, aes(Time, PD, fill = Soil)) + 
-  geom_boxplot() +
-  expand_limits(y=0)  + 
-  theme_minimal() +
-  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
-  xlab(element_blank())+ 
-  facet_grid(~Soil)
-
-ShannonD0 = subset(Shannon, Time < 1)
-
-ggplot(ShannonD0, aes(Soil, Shannon, fill = Soil)) + 
-  geom_boxplot() +expand_limits(y=0)  + 
-  theme_minimal() +
-  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
-  xlab(element_blank())
-```
-
-```{r, correlation with cage-lung}
+```{r, shannon correlation with cage-lung, updated #####################}
 #######
 Shannon.result = estimate_richness(ps.lung, measures = "Shannon")
 
-Shannon.result$Samples = rownames(Shannon.lung)
 lungDF = sample_data(ps.lung)
 Shannon.lung = cbind(lungDF, Shannon.result)
 
@@ -646,39 +623,88 @@ Shannon.soil = select(Shannon.soil, Shannon, join)
 corDFHI = merge(Shannon.lung, Shannon.soil, by = "join") %>%
   subset(., Flu == "HI")
 
-p = ggplot(corDF, aes(x = logShannon, y = Shannon.y)) + 
-  geom_point() + 
-  geom_smooth(method = "lm") +
-  theme_minimal() + 
-  ylab("Cage Shannon diversity")+ 
-  xlab("Inverse Lung Shannon diversity")
-
 corDFPR8 = merge(Shannon.lung, Shannon.soil, by = "join") %>%
   subset(., Flu == "PR8")
 
 corDF = rbind(corDFHI, corDFPR8)
 
-g=ggplot(corDF, aes(x = logShannon, y = Shannon.y)) + 
+g=ggplot(corDF, aes(x = Shannon.x, y = Shannon.y)) + 
   geom_point() + 
   geom_smooth(method = "lm") +
   theme_minimal() + 
   ylab("Cage Shannon diversity")+ 
-  xlab("Inverse Lung Shannon diversity") +
+  xlab("Lung Shannon diversity") +
   facet_grid(~Flu)
 
-ggscatter(corDFPR8, x = "logShannon", y = "Shannon.y", 
+r=ggscatter(corDFPR8, x = "Shannon.x", y = "Shannon.y", 
           add = "reg.line", conf.int = TRUE, 
           cor.coef = TRUE, cor.method = "pearson",
-          xlab = "Lung", ylab = "Cage")
+          xlab = "Lung PR8 Shannon Diversity", ylab = "Cage Shannon Diversity", cor.coeff.args = list(method = "pearson", label.x.npc = "left", label.y.npc = "bottom"), ggtheme = theme_minimal())
+
+l=ggscatter(corDFHI, x = "Shannon.x", y = "Shannon.y", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Lung HI Shannon Diversity", ylab = "Cage Shannon Diversity", cor.coeff.args = list(method = "pearson", label.x.npc = "left", label.y.npc = "bottom"), ggtheme = theme_minimal())
+
+m=ggarrange(r,l, ncol = 2, labels = c("A", "B"))
 ```
 
-```{r}
-#changed from ps.final
+```{r, observed correlation cage-lung, updated ###########################}
+Observed.result = estimate_richness(ps.lung, measures = "Observed")
+
+lungDF = sample_data(ps.lung)
+Observed.lung = cbind(lungDF, Observed.result)
+
+Observed.lung$logObserved = log10(max(Observed.lung$Observed+1) - Observed.lung$Observed)
+
+Observed.lung$join = paste(Observed.lung$Soil, Observed.lung$Cohort, Observed.lung$Flu)
+Observed.result = estimate_richness(ps.soil, measures = "Observed")
+
+Observed.result$Samples = rownames(Observed.result)
+soilDF = sample_data(ps.soil.r)
+
+Observed.soil = cbind(soilDF, Observed.result) %>%
+  subset(., Time == "35")
+
+Observed.soil$join = paste(Observed.soil$Soil, Observed.soil$Cohort, Observed.soil$Flu)
+
+Observed.soil = select(Observed.soil, Observed, join)
+
+corDFHI = merge(Observed.lung, Observed.soil, by = "join") %>%
+  subset(., Flu == "HI")
+
+corDFPR8 = merge(Observed.lung, Observed.soil, by = "join") %>%
+  subset(., Flu == "PR8")
+
+corDF = rbind(corDFHI, corDFPR8)
+
+ggplot(corDFHI, aes(x = Observed.x, y = Observed.y, fill = Soil)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  theme_minimal() + 
+  ylab("Cage Observed diversity")+ 
+  xlab("Inverse Lung Observed diversity") +
+  facet_grid(~Flu)
+
+p=ggscatter(corDFPR8, x = "Observed.x", y = "Observed.y", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Lung PR8 Richness", ylab = "Cage Richness", cor.coeff.args = list(method = "pearson", label.x.npc = "left", label.y.npc = "bottom"), ggtheme = theme_minimal())
+
+g=ggscatter(corDFHI, x = "Observed.x", y = "Observed.y", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Lung HI Richness", ylab = "Cage Richness", cor.coeff.args = list(method = "pearson", label.x.npc = "left", label.y.npc = "center"), ggtheme = theme_minimal())
+
+m=ggarrange(l,r,g,p, ncol = 2, nrow = 2, labels = c("A", "B", "C", "D"))
+```
+
+```{r, fecal NMDS and shannon div and richness, updated ###################################}
 ps.fecal = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Fecal") %>%
   subset_taxa(., phylum != "NA") %>%
   prune_species(speciesSums(.) > 0, .) 
 
-table(tax_table(ps.fecal)[, "phylum"], exclude = NULL)
+ps.fecal = subset_samples(ps.fecal, sample_sums(ps.fecal) > 1000)
 
 min(sample_sums(ps.fecal))
 
@@ -695,13 +721,15 @@ p=ordinate(ps.fecal.r, method = "NMDS", distance = "bray", trymax = 1000) %>%
   plot_ordination(ps.fecal, ., type="samples", color = "Soil") +
   theme_minimal() +
   stat_ellipse()+ 
-  facet_grid(~Time)
+  facet_grid(Flu~Time)
+
+p$stress
 
 PermDF = data.frame(sample_data(ps.fecal.r))
 BetaD=vegdist(vegan_otu(ps.fecal.r), "bray")
 
 #permanova by soil
-adonis(BetaD~Soil*Time, permutations = 999, data=PermDF)
+adonis(BetaD~Soil+Time+Flu+Soil:Time+Soil:Flu+Time:Flu, permutations = 999, data=PermDF)
 
 PermDF = subset_samples(ps.fecal.r, sample_data(ps.fecal.r)$Time == "35") %>%
   sample_data(.) %>%
@@ -724,26 +752,28 @@ Shannon = cbind(fecalDF, Shannon.result)
 
 Shannon$Time = as.factor(Shannon$Time)
 
-shapiro.test(Shannon$Shannon)
 hist(Shannon$Shannon)
+
+ggqqplot(Shannon$Shannon)
+
 Shannon$logShannon = log10(max(Shannon$Shannon+1) - Shannon$Shannon)
 shapiro.test(Shannon$logShannon)
 hist(Shannon$logShannon)
 
-fit = aov(logShannon ~ Soil*Time, data = Shannon)
+fit = aov(Shannon ~ Soil*Time*Flu, data = Shannon)
 summary(fit)
 
 TukeyHSD(fit)
 
-p=ggplot(Shannon, aes(Time, logShannon, fill = Soil)) + 
+p=ggplot(Shannon, aes(Time, Shannon, fill = Soil)) + 
   geom_boxplot() +
   expand_limits(y=0)  + 
   theme_minimal() +
   xlab(element_blank())+ 
   facet_grid(~Soil) +
-  ylab("log(max(Diversity + 1) - Diversity") + 
+  ylab("Shannon Diversity") + 
   xlab("Time (days)")+
-  scale_y_continuous(limits = c(0,0.6)) + 
+  scale_y_continuous(limits = c(0,6)) + 
   theme(legend.position = "none")
 
 ####################
@@ -765,17 +795,23 @@ shapiro.test(Observed$Observed)
 Observed$SQObserved = sqrt(Observed$Observed)
 hist(Observed$SQObserved)
 ggqqplot(Observed$SQObserved)
+shapiro.test(Observed$SQObserved)
 
-g=ggplot(Observed, aes(Time, SQObserved, fill = Soil)) + 
+g=ggplot(Observed, aes(Time, Observed, fill = Soil)) + 
   geom_boxplot() +
   expand_limits(y=0)  + 
   theme_minimal() +
   xlab(element_blank())+ 
   facet_grid(~Soil) +
-  ylab("Square Root(Richness)") + 
+  ylab("Richness") + 
   xlab("Time (days)")+
-  scale_y_continuous(limits = c(0,30)) + 
+  #scale_y_continuous(limits = c(0,30)) + 
   theme(legend.position = "none")
+
+kruskal.test(Observed ~ Flu, data = Observed)
+
+Observed %>%
+  pairwise_wilcox_test(Observed ~ Soil, p.adjust.methods = "bonferroni")
 
 fit = aov(SQObserved ~ Soil*Time, data = Observed)
 summary(fit)
@@ -783,38 +819,16 @@ TukeyHSD(fit)
 plot(fit)
 
 r = ggarrange(p,g, labels = c("A", "B"), nrow = 2)
+r
 ```
 
-```{r}
-ps.FW = subset_samples(ps.final, sample_data(ps.final)$SampleType == "Water" | sample_data(ps.final)$SampleType == "Food") %>%
-  prune_species(speciesSums(.) > 0, .) 
-
-ordinate(ps.FW, method = "NMDS", distance = "bray", trymax = 1000) %>%
-  plot_ordination(ps.FW, ., type="samples", color = "SampleType") +
-  theme_classic() +
-  stat_ellipse()
-
-Shannon.result = estimate_richness(ps.FW, measures = "Shannon")
-
-Shannon.result$Samples = rownames(Shannon.result)
-lungDF = sample_data(ps.lung)
-Shannon = cbind(lungDF, Shannon.result)
-
-ggplot(Shannon, aes(SampleType, Shannon, fill = Soil)) + 
-  geom_boxplot() +expand_limits(y=0)  + 
-  theme_minimal() +
-  #scale_fill_manual(values = c("#BF812D","darkslategray4"))+
-  xlab(element_blank())+ 
-  facet_grid(~Flu)
-```
-
-```{r, ANCOMBC of the lung}
-sample_data(ps.lung)$Soil = as.factor(sample_data(ps.lung)$Soil)
+```{r, ANCOMBC of the lung, #########################}
+sample_data(ps.lung)$Soil = factor(sample_data(ps.lung)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
 sample_data(ps.lung)$Flu = as.factor(sample_data(ps.lung)$Flu)
 sample_data(ps.lung)$Soil
 sample_data(ps.lung)$Flu
 
-out = ancombc(phyloseq = ps.lung, formula = "Soil + Flu", 
+out = ancombc(phyloseq = ps.lung, formula = "Soil+Flu", 
               p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
               group = "Soil", struc_zero = F, neg_lb = F, tol = 1e-5, 
               max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
@@ -823,24 +837,29 @@ out.lung = out
 res = out.lung$res
 tab_q.lung = res$q
 
+col_name = c("BetaPine_lung", "BetaRiver_lung", "BetaRoad_lung", "BetaFlu_lung")
+tab_coef = res$beta
+colnames(tab_coef) = col_name
+tab_coef$ASV = rownames(tab_coef)
+
 col_name = c("Ctrl-Pine_lung", "Ctrl-River_lung", "Ctrl-Road_lung", "HI-PR8_lung")
 colnames(tab_q.lung) = col_name
 tab_q.lung
 tab_q.lung$ASV = rownames(tab_q.lung)
 ```
 
-```{r}
-sample_data(ps.soil)$Soil = as.factor(sample_data(ps.soil)$Soil)
+```{r, ANCOMBC of soils day 14 and 35 #############}
+sample_data(ps.soil)$Soil = factor(sample_data(ps.soil)$Soil, levels = c("Ctrl", "Pine", "River", "Road"))
 sample_data(ps.soil)$Flu = as.factor(sample_data(ps.soil)$Flu)
 sample_data(ps.soil)$Soil
 sample_data(ps.soil)$Flu
 
-ps.soil.35 = subset_samples(ps.soil, sample_data(ps.soil)$Time == "35") %>%
+ps.soil.C = subset_samples(ps.soil, sample_data(ps.soil)$Time == "35" | sample_data(ps.soil)$Time == "14") %>%
   prune_species(speciesSums(.) > 0, .)
 
-out = ancombc(phyloseq = ps.soil.35, formula = "Soil + Flu", 
+out = ancombc(phyloseq = ps.soil.C, formula = "Soil + Flu", 
               p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
-              group = "Soil", struc_zero = T, neg_lb = T, tol = 1e-5, 
+              group = "Soil", struc_zero = F, neg_lb = T, tol = 1e-5, 
               max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
 
 out.soil = out
@@ -851,32 +870,18 @@ col_name = c("Ctrl-Pine_soil", "Ctrl-River_soil", "Ctrl-Road_soil", "HI-PR8_soil
 colnames(tab_q.soil) = col_name
 tab_q.soil$ASV = rownames(tab_q.soil)
 tab_q.soil
-
-out = ancombc(phyloseq = ps.soil.35, formula = "Soil + Flu", 
-              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
-              group = "Soil", struc_zero = F, neg_lb = F, tol = 1e-5, 
-              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
-
-out.soil.strucZ = out
-res = out.soil.strucZ$res
-tab_q.soil.strucZ = res$q
-
-col_name = c("Ctrl-Pine_soil", "Ctrl-River_soil", "Ctrl-Road_soil", "HI-PR8_soil")
-colnames(tab_q.soil.strucZ) = col_name
-tab_q.soil.strucZ$ASV = rownames(tab_q.soil.strucZ)
-tab_q.soil.strucZ
 ```
 
-```{r}
+```{r, ANCOMBC of fecal days 14 and 35 ########################}
 sample_data(ps.fecal)$Soil = as.factor(sample_data(ps.fecal)$Soil)
 sample_data(ps.fecal)$Flu = as.factor(sample_data(ps.fecal)$Flu)
 sample_data(ps.fecal)$Soil
 sample_data(ps.fecal)$Flu
 
-ps.fecal.35 = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "35") %>%
+ps.fecal.C = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "35" | sample_data(ps.fecal)$Time == "14") %>%
   prune_species(speciesSums(.) > 0, .)
 
-out = ancombc(phyloseq = ps.fecal.35, formula = "Soil + Flu", 
+out = ancombc(phyloseq = ps.fecal.C, formula = "Soil + Flu", 
               p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
               group = "Soil", struc_zero = F, neg_lb = F, tol = 1e-5, 
               max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
@@ -887,18 +892,404 @@ tab_q.fecal = res$q
 
 col_name = c("Ctrl-Pine_fecal", "Ctrl-River_fecal", "Ctrl-Road_fecal", "HI-PR8_fecal")
 colnames(tab_q.fecal) = col_name
+tab_q.fecal$ASV = rownames(tab_q.fecal)
 tab_q.fecal
 ```
 
-```{r}
-tab = left_join(tab_q.lung, tab_q.soil, by = "ASV")
+```{r, combine all q tables and look things over}
+tab.fecal = left_join(tab_q.fecal, tab_q.soil, by = "ASV")
+tab.lung = left_join(tab_q.lung, tab_q.soil, by = "ASV")
 
-PineDF =  subset(tab, tab$`Ctrl-Pine_lung` < 0.05 & tab$`Ctrl-Pine_soil` < 0.05)
-RiverDF =  subset(tab, tab$`Ctrl-River_lung` < 0.05 & tab$`Ctrl-River_soil` < 0.05)
-RoadDF =  subset(tab, tab$`Ctrl-Road_lung` < 0.05 & tab$`Ctrl-Road_soil` < 0.05)
+PineDF =  subset(tab.lung, tab.lung$`Ctrl-Pine_lung` < 0.05 & tab.lung$`Ctrl-Pine_soil` < 0.05 ) %>%
+  select(., `Ctrl-Pine_lung`,  ASV)
+names = PineDF$ASV
+PineTax = tax_table(ps.lung.r)[names,] %>%
+  data.frame(.)
+PineTax$ASV = rownames(PineTax)
+PineDF = left_join(PineDF, PineTax, by = "ASV")
+
+RiverDF =  subset(tab.lung, tab.lung$`Ctrl-River_lung` < 0.05 & tab.lung$`Ctrl-River_soil` < 0.05) %>%
+  select(., `Ctrl-River_lung`, ASV)
+names = RiverDF$ASV
+RiverTax = tax_table(ps.lung.r)[names,] %>%
+  data.frame(.)
+RiverTax$ASV = rownames(RiverTax)
+RiverDF = left_join(RiverDF, RiverTax, by = "ASV")
+
+RoadDF =  subset(tab.lung, tab.lung$`Ctrl-Road_lung` < 0.05 & tab.lung$`Ctrl-Road_soil` < 0.05) %>%
+  select(., `Ctrl-Road_lung`, ASV)
+names = RoadDF$ASV
+RoadTax = tax_table(ps.lung.r)[names,] %>%
+  data.frame(.)
+RoadTax$ASV = rownames(RoadTax)
+RoadDF = left_join(RoadDF, RoadTax, by = "ASV")
+
+z = RoadTax$family == "Lachnospiraceae"
+sum(z, na.rm = TRUE)
+
+setdiff(PineDF$ASV, bad_taxa_num$ASV)
+
+intersect(PineDF$ASV, RoadDF$ASV)
+
+setdiff(RoadDF$ASV, bad_taxa_num$ASV)
+
+################
+PineDF =  subset(tab.fecal, tab.fecal$`Ctrl-Pine_fecal` < 0.05 & tab.fecal$`Ctrl-Pine_soil` < 0.05 ) %>%
+  select(., `Ctrl-Pine_fecal`,  ASV)
+names = PineDF$ASV
+PineTax = tax_table(ps.fecal.C)[names,] %>%
+  data.frame(.)
+PineTax$ASV = rownames(PineTax)
+PineDF = left_join(PineDF, PineTax, by = "ASV")
+
+RiverDF =  subset(tab.fecal, tab.fecal$`Ctrl-River_fecal` < 0.05 & tab.fecal$`Ctrl-River_soil` < 0.05) %>%
+  select(., `Ctrl-River_fecal`, ASV)
+names = RiverDF$ASV
+RiverTax = tax_table(ps.fecal.C)[names,] %>%
+  data.frame(.)
+RiverTax$ASV = rownames(RiverTax)
+RiverDF = left_join(RiverDF, RiverTax, by = "ASV")
+
+RoadDF =  subset(tab.fecal, tab.fecal$`Ctrl-Road_fecal` < 0.05 & tab.fecal$`Ctrl-Road_soil` < 0.05) %>%
+  select(., `Ctrl-Road_fecal`, ASV)
+names = RoadDF$ASV
+RoadTax = tax_table(ps.fecal.C)[names,] %>%
+  data.frame(.)
+RoadTax$ASV = rownames(RoadTax)
+RoadDF = left_join(RoadDF, RoadTax, by = "ASV")
+
+z = RiverTax$family == "Lachnospiraceae"
+sum(z, na.rm = TRUE)
+
+setdiff(PineDF$ASV, bad_taxa_num$ASV)
+
+setdiff(RiverDF$ASV, bad_taxa_num$ASV)
+
+intersect(PineDF$ASV, RoadDF$ASV)
+
+setdiff(RoadDF$ASV, bad_taxa_num$ASV)
 ```
 
-```{r, phylum barplot}
+```{r, lach plot ################################}
+ps.lung.fam = tax_glom(ps.lung.r, taxrank = "family")
+
+tax_table(ps.lung.fam)[, "family"]
+
+lungdf = sample_data(ps.lung.r)
+
+#lachno
+
+FamDFASV = cbind(lungdf, otu_table(ps.lung.fam)[,"51008"]) %>%
+  #subset(., soil == "River") %>%
+  select(., Soil, Flu, Time, Ear, Cohort, `51008`) %>%
+  #summary(.) %>%
+  data.frame(.) 
+
+y_title = base::expression(paste(italic("Lachnospiraceae"), " mean lung relative abundance"))
+
+q=ggplot(FamDFASV, aes(Soil, X51008, fill = Soil)) + 
+  geom_boxplot() +
+  scale_y_continuous(limits = c(0,1), expand = c(0, 0))+ 
+  theme_minimal() +
+  xlab(element_blank()) +
+  ylab(y_title)+ 
+  theme(legend.position = "none") 
+
+FamDFASV %>%
+  pairwise_wilcox_test(X51008 ~ Soil, p.adjust.methods = "bonferroni")
+
+#Oscilli
+
+FamDFASV = cbind(lungdf, otu_table(ps.lung.fam)[,"49066"]) %>%
+  #subset(., soil == "River") %>%
+  select(., Soil, Flu, Time, Ear, Cohort, `49066`) %>%
+  #summary(.) %>%
+  data.frame(.) 
+
+y_title = base::expression(paste(italic("Oscillospiraceae"), " mean lung relative abundance"))
+
+r=ggplot(FamDFASV, aes(Soil, X49066, fill = Soil)) + 
+  geom_boxplot() +
+  scale_y_continuous(limits = c(0,0.3), expand = c(0, 0))+ 
+  theme_minimal() +
+  xlab(element_blank()) +
+  ylab(y_title)+ 
+  theme(legend.position = "none") 
+
+FamDFASV %>%
+  pairwise_wilcox_test(X49066 ~ Soil, p.adjust.methods = "bonferroni")
+
+##############################
+
+ps.fecal.fam =transform_sample_counts(ps.fecal.C, function(x) x/sum(x)) %>%
+  tax_glom(., taxrank = "family")
+
+tax_table(ps.fecal.fam)[, "family"]
+
+fecaldf = sample_data(ps.fecal.fam)
+
+#Lachno
+
+FamDFASV = cbind(fecaldf, otu_table(ps.fecal.fam)[,"50665"]) %>%
+  #subset(., soil == "River") %>%
+  select(., Time, Soil, Flu, Ear, Cohort, `50665`) %>%
+  #summary(.) %>%
+  data.frame(.) 
+
+y_title = base::expression(paste(italic("Lachnospiraceae"), " mean gut relative abundance"))
+
+l=ggplot(FamDFASV, aes(Soil, X50665, fill = Soil)) + 
+  geom_boxplot() +
+  scale_y_continuous(limits = c(0,1), expand = c(0, 0))+ 
+  theme_minimal() +
+  xlab(element_blank()) +
+  ylab(y_title)+ 
+  theme(legend.position = "none") 
+
+FamDFASV %>%
+  pairwise_wilcox_test(X50665 ~ Soil, p.adjust.methods = "bonferroni")
+
+#Oscilli
+FamDFASV = cbind(fecaldf, otu_table(ps.fecal.fam)[,"51495"]) %>%
+  #subset(., soil == "River") %>%
+  select(., Time, Soil, Flu, Ear, Cohort, `51495`) %>%
+  #summary(.) %>%
+  data.frame(.) 
+
+y_title = base::expression(paste(italic("Oscillospiraceae"), " mean gut relative abundance"))
+
+p=ggplot(FamDFASV, aes(Soil, X51495, fill = Soil)) + 
+  geom_boxplot() +
+  scale_y_continuous(limits = c(0,0.3), expand = c(0, 0))+ 
+  theme_minimal() +
+  xlab(element_blank()) +
+  ylab(y_title)+ 
+  theme(legend.position = "none") 
+
+FamDFASV %>%
+  pairwise_wilcox_test(X51495 ~ Soil, p.adjust.methods = "bonferroni")
+
+m=ggarrange(q,l,r,p, ncol = 2, nrow = 2, labels = c("A", "B", "C","D"))
+m
+```
+
+```{r, find origin of ANCOM ASVs (soil or feces?) Pine ###################################}
+PineDF =  subset(tab.fecal, tab.fecal$`Ctrl-Pine_fecal` < 0.05) %>%
+  select(., `Ctrl-Pine_fecal`,  ASV)
+names = PineDF$ASV
+PineTax = tax_table(ps.fecal.C)[names,] %>%
+  data.frame(.)
+PineTax$ASV = rownames(PineTax)
+PineDF = left_join(PineDF, PineTax, by = "ASV")
+
+ps.soil.pine = subset_samples(ps.soil, sample_data(ps.soil)$Soil == "Pine" & sample_data(ps.soil)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Pine <- ps.soil.pine %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+ps.fecalD0 = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Fecal <- ps.fecalD0 %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+D0FecalPine = setdiff(D0Fecal, D0Pine)
+
+D0FecalPine = setdiff(D0FecalPine, bad_taxa_num$ASV)
+
+D0Pine = setdiff(D0Pine, D0Fecal)
+
+D0Pine = setdiff(D0Pine, bad_taxa_num$ASV)
+
+intersect(PineDF$ASV, D0FecalPine)
+
+# "20749" "47619" "48699" "48734" "48812" "48966" "48970" "49019" "49076" "49084" "49104" "49870" "49894" "49942" "49983" "49999" "50317"
+# "50339" "50455" "50463" "50674" "50687" "50691" "50986" "50988" "50998" "50999" "51006" "51028" "51035" "51071" "51095" "51096" "51131"
+# "51133" "51332" "51337" "51431" "51435" "51442" "51463" "52018" "52024" "52064" "52068" "52092" "52112" "52154" "52566" "52601" "52603"
+# "52613" "52656" "52709" "52756" "52794" "52935"
+
+intersect(PineDF$ASV, D0Pine)
+
+#none
+
+######### Lung #########
+PineDF =  subset(tab.lung, tab.lung$`Ctrl-Pine_lung` < 0.05) %>%
+  select(., `Ctrl-Pine_lung`,  ASV)
+names = PineDF$ASV
+PineTax = tax_table(ps.lung.r)[names,] %>%
+  data.frame(.)
+PineTax$ASV = rownames(PineTax)
+PineDF = left_join(PineDF, PineTax, by = "ASV")
+
+ps.soil.pine = subset_samples(ps.soil, sample_data(ps.soil)$Soil == "Pine" & sample_data(ps.soil)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Pine <- ps.soil.pine %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+ps.fecalD0 = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Fecal <- ps.fecalD0 %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+D0FecalPine = setdiff(D0Fecal, D0Pine)
+
+D0FecalPine = setdiff(D0FecalPine, bad_taxa_num$ASV)
+
+D0Pine = setdiff(D0Pine, D0Fecal)
+
+D0Pine = setdiff(D0Pine, bad_taxa_num$ASV)
+
+intersect(PineDF$ASV, D0FecalPine)
+
+# "49084" "49104" "49983" "49998" "50317" "50384" "50455" "50463" "50601" "50674" "50693" "50798" "50965" "50976" "50986" "50988" "50996"
+# "51022" "51028" "51071" "51079" "51121" "51133" "51337" "51421" "51431" "51435" "51503" "52217" "52601" "52603" "52622" "52644" "52656"
+# "52705" "52756" "52794" "52836"
+
+intersect(PineDF$ASV, D0Pine)
+
+# "50740" "52839"
+```
+
+```{r, find origin of ANCOM ASVs (soil or feces?) Road ###################################}
+RoadDF =  subset(tab.fecal, tab.fecal$`Ctrl-Road_fecal` < 0.05) %>%
+  select(., `Ctrl-Road_fecal`,  ASV)
+names = RoadDF$ASV
+RoadTax = tax_table(ps.fecal.C)[names,] %>%
+  data.frame(.)
+RoadTax$ASV = rownames(RoadTax)
+RoadDF = left_join(RoadDF, RoadTax, by = "ASV")
+
+ps.soil.Road = subset_samples(ps.soil, sample_data(ps.soil)$Soil == "Road" & sample_data(ps.soil)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Road <- ps.soil.Road %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+ps.fecalD0 = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Fecal <- ps.fecalD0 %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+D0FecalRoad = setdiff(D0Fecal, D0Road)
+
+D0FecalRoad = setdiff(D0FecalRoad, bad_taxa_num$ASV)
+
+D0Road = setdiff(D0Road, D0Fecal)
+
+D0Road = setdiff(D0Road, bad_taxa_num$ASV)
+
+intersect(RoadDF$ASV, D0FecalRoad)
+
+# "47539" "49872" "50455" "50463" "51022" "51337" "51377"
+
+intersect(RoadDF$ASV, D0Road)
+
+#none
+
+######### Lung #########
+RoadDF =  subset(tab.lung, tab.lung$`Ctrl-Road_lung` < 0.05) %>%
+  select(., `Ctrl-Road_lung`,  ASV)
+names = RoadDF$ASV
+RoadTax = tax_table(ps.lung.r)[names,] %>%
+  data.frame(.)
+RoadTax$ASV = rownames(RoadTax)
+RoadDF = left_join(RoadDF, RoadTax, by = "ASV")
+
+ps.soil.Road = subset_samples(ps.soil, sample_data(ps.soil)$Soil == "Road" & sample_data(ps.soil)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Road <- ps.soil.Road %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+ps.fecalD0 = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Fecal <- ps.fecalD0 %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+D0FecalRoad = setdiff(D0Fecal, D0Road)
+
+D0FecalRoad = setdiff(D0FecalRoad, bad_taxa_num$ASV)
+
+D0Road = setdiff(D0Road, D0Fecal)
+
+D0Road = setdiff(D0Road, bad_taxa_num$ASV)
+
+intersect(RoadDF$ASV, D0FecalRoad)
+
+# "50384" "50965" "52153" "52504"
+
+intersect(RoadDF$ASV, D0Road)
+
+# "12421" "31878" "44877"
+```
+
+```{r, find origin of ANCOM ASVs (soil or feces?) River ##################################}
+RiverDF =  subset(tab.fecal, tab.fecal$`Ctrl-River_fecal` < 0.05) %>%
+  select(., `Ctrl-River_fecal`, ASV)
+names = RiverDF$ASV
+RiverTax = tax_table(ps.fecal.C)[names,] %>%
+  data.frame(.)
+RiverTax$ASV = rownames(RiverTax)
+RiverDF = left_join(RiverDF, RiverTax, by = "ASV")
+
+ps.soil.river = subset_samples(ps.soil, sample_data(ps.soil)$Soil == "River" & sample_data(ps.soil)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0River <- ps.soil.river %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+ps.fecalD0 = subset_samples(ps.fecal, sample_data(ps.fecal)$Time == "0") %>%
+  prune_species(speciesSums(.) > 0, .)
+
+D0Fecal <- ps.fecalD0 %>%
+    subset_samples(Time == "0") %>%
+    prune_species(speciesSums(.) > 0, .) %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+D0FecalRiver = setdiff(D0Fecal, D0River)
+
+D0FecalRiver = setdiff(D0FecalRiver, bad_taxa_num$ASV)
+
+D0River = setdiff(D0River, D0Fecal)
+
+D0River = setdiff(D0River, bad_taxa_num$ASV)
+
+intersect(RiverDF$ASV, D0FecalRiver)
+
+# "48395" "48695" "48734" "48966" "49084" "49937" "50068" "50384" "50469" "50659" "50674" "50999" "51006" "51022" "51096" 
+# "51133" "51336" "51337" "51377" "51431" "51435" "51442" "51446" "51465" "52601" "52603" "52641" "52709" "52933" "52935"
+
+intersect(RiverDF$ASV, D0River)
+
+#none
+```
+
+```{r, phylum barplot, #########################################}
 library(dplyr)
 
 ps.phylum = tax_glom(ps.lung.r, "phylum")
@@ -1004,7 +1395,7 @@ figLung = select(figLung, -Avg) %>%
 #########Fecal Samples
 library(dplyr)
 
-ps.phylum = subset_samples(ps.fecal.r, sample_data(ps.fecal.r)$Time == "35") %>%
+ps.phylum = subset_samples(ps.fecal.r, sample_data(ps.fecal.r)$Time == "14") %>%
   tax_glom(., "phylum")
 
 psC1 = subset_samples(ps.phylum, sample_data(ps.phylum)$Soil == "Pine") 
@@ -1108,7 +1499,7 @@ figFecal = select(figFecal, -Avg) %>%
 #########Soil Samples
 library(dplyr)
 
-ps.phylum = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "35") %>%
+ps.phylum = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Time == "14") %>%
   tax_glom(., "phylum")
 
 psC1 = subset_samples(ps.phylum, sample_data(ps.phylum)$Soil == "Pine") 
@@ -1222,9 +1613,9 @@ f = rbind(fLung, fSoil, fFecal)
 unique(f$tax)
 library(RColorBrewer)
 
-mycolors = c("#666666","#4A72A6","#B75F49","#5ab4ac","#e6550d","#EC83BA","#48A462")#,"#e6550d","#B75F49","#5ab4ac","#666666")
+mycolors = c("#666666","#4A72A6","#B75F49","#5ab4ac","#e6550d","#FFB716","#E41A1C","#48A462")#,"#e6550d","#B75F49","#5ab4ac","#666666")
 
-f$tax = factor(f$tax, levels=c("Other","Proteobacteria", "Verrucomicrobiota", "Acidobacteriota", "Actinobacteriota", "Bacteroidota", "Firmicutes"))
+f$tax = factor(f$tax, levels=c("Other","Proteobacteria", "Planctomycetota", "Verrucomicrobiota", "Acidobacteriota", "Actinobacteriota", "Bacteroidota", "Firmicutes"))
 
 p=ggplot(f, aes(fill = tax, y=value, x=variable)) +
   geom_bar(position="stack", stat="identity", color = "black", size = 0.25) +
@@ -1236,42 +1627,495 @@ p=ggplot(f, aes(fill = tax, y=value, x=variable)) +
   scale_y_continuous(limits = c(0,1), expand = c(0, 0))+
 theme(legend.text.align = 0) +
   facet_grid(~Sample)
+p
+
+```
+
+
+####################################################
+
+```{r, ANCOM-BC for River lung flu samples########}
+sample_data(ps.lung)$Soil = factor(sample_data(ps.lung)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.lung)$Flu = as.factor(sample_data(ps.lung)$Flu)
+sample_data(ps.lung)$Soil
+sample_data(ps.lung)$Flu
+
+ps.lungRiver = subset_samples(ps.lung, sample_data(ps.lung)$Soil == "River") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.lungRiver, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungRiver = out
+res = out.lungRiver$res
+tab_q.lungRiver = res$q 
+
+col_name = c("River_Flu_lung")
+colnames(tab_q.lungRiver) = col_name
+tab_q.lungRiver
+tab_q.lungRiver$ASV = rownames(tab_q.lungRiver)
+
+FluDF = subset(tab_q.lungRiver, tab_q.lungRiver$River_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.lung)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+RiverDFFlu = FluDF
+```
+
+```{r, ANCOM-BC for Pine lung flu samples#########}
+sample_data(ps.lung)$Soil = factor(sample_data(ps.lung)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.lung)$Flu = as.factor(sample_data(ps.lung)$Flu)
+sample_data(ps.lung)$Soil
+sample_data(ps.lung)$Flu
+
+ps.lungRiver = subset_samples(ps.lung, sample_data(ps.lung)$Soil == "Pine") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.lungRiver, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungRiver = out
+res = out.lungRiver$res
+tab_q.lungRiver = res$q 
+
+col_name = c("River_Flu_lung")
+colnames(tab_q.lungRiver) = col_name
+tab_q.lungRiver
+tab_q.lungRiver$ASV = rownames(tab_q.lungRiver)
+
+FluDF = subset(tab_q.lungRiver, tab_q.lungRiver$River_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.lung)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+PineDFFlu = FluDF
+```
+
+```{r, ANCOM-BC for Road lung flu samples#########}
+sample_data(ps.lung)$Soil = factor(sample_data(ps.lung)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.lung)$Flu = as.factor(sample_data(ps.lung)$Flu)
+sample_data(ps.lung)$Soil
+sample_data(ps.lung)$Flu
+
+ps.lungRiver = subset_samples(ps.lung, sample_data(ps.lung)$Soil == "Road") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.lungRiver, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungRiver = out
+res = out.lungRiver$res
+tab_q.lungRiver = res$q 
+
+col_name = c("River_Flu_lung")
+colnames(tab_q.lungRiver) = col_name
+tab_q.lungRiver
+tab_q.lungRiver$ASV = rownames(tab_q.lungRiver)
+
+FluDF = subset(tab_q.lungRiver, tab_q.lungRiver$River_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.lung)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+RoadDFFlu = FluDF
+```
+
+```{r, ANCOM-BC for Ctrl lung flu samples#########}
+sample_data(ps.lung)$Soil = factor(sample_data(ps.lung)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.lung)$Flu = as.factor(sample_data(ps.lung)$Flu)
+sample_data(ps.lung)$Soil
+sample_data(ps.lung)$Flu
+
+ps.lungRiver = subset_samples(ps.lung, sample_data(ps.lung)$Soil == "Ctrl") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.lungRiver, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungRiver = out
+res = out.lungRiver$res
+tab_q.lungRiver = res$q 
+
+col_name = c("River_Flu_lung")
+colnames(tab_q.lungRiver) = col_name
+tab_q.lungRiver
+tab_q.lungRiver$ASV = rownames(tab_q.lungRiver)
+
+FluDF = subset(tab_q.lungRiver, tab_q.lungRiver$River_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.lung)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+CtrlDFFlu = FluDF
+```
+
+
+```{r, ANCOM-BC for River fecal flu samples#######}
+sample_data(ps.fecal)$Soil = factor(sample_data(ps.fecal)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.fecal)$Flu = as.factor(sample_data(ps.fecal)$Flu)
+sample_data(ps.fecal)$Soil
+sample_data(ps.fecal)$Flu
+
+ps.fecalRiver = subset_samples(ps.fecal, sample_data(ps.fecal)$Soil == "River" & sample_data(ps.fecal)$Time == "35") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.fecalRiver, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungRiver = out
+res = out.lungRiver$res
+tab_q.lungRiver = res$q 
+
+col_name = c("River_Flu_lung")
+colnames(tab_q.lungRiver) = col_name
+tab_q.lungRiver
+tab_q.lungRiver$ASV = rownames(tab_q.lungRiver)
+
+FluDF = subset(tab_q.lungRiver, tab_q.lungRiver$River_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.fecal)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+
+riverDFecal = FluDF
+sample_names(ps.fecalRiver)
+```
+
+```{r, ANCOM-BC for Road fecal flu samples}
+sample_data(ps.fecal)$Soil = factor(sample_data(ps.fecal)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.fecal)$Flu = as.factor(sample_data(ps.fecal)$Flu)
+sample_data(ps.fecal)$Soil
+sample_data(ps.fecal)$Flu
+
+ps.fecalRoad = subset_samples(ps.fecal, sample_data(ps.fecal)$Soil == "Road" & sample_data(ps.fecal)$Time == "35") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.fecalRoad, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungRoad = out
+res = out.lungRoad$res
+tab_q.lungRoad = res$q 
+
+col_name = c("Road_Flu_lung")
+colnames(tab_q.lungRoad) = col_name
+tab_q.lungRoad
+tab_q.lungRoad$ASV = rownames(tab_q.lungRoad)
+
+FluDF = subset(tab_q.lungRoad, tab_q.lungRoad$Road_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.fecal)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+
+RoadDFecal = FluDF
+```
+
+```{r, ANCOM-BC for Pine fecal flu samples}
+sample_data(ps.fecal)$Soil = factor(sample_data(ps.fecal)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.fecal)$Flu = as.factor(sample_data(ps.fecal)$Flu)
+sample_data(ps.fecal)$Soil
+sample_data(ps.fecal)$Flu
+
+ps.fecalPine = subset_samples(ps.fecal, sample_data(ps.fecal)$Soil == "Pine" & sample_data(ps.fecal)$Time == "35") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.fecalPine, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+out.lungPine = out
+res = out.lungPine$res
+tab_q.lungPine = res$q 
+
+col_name = c("Pine_Flu_lung")
+colnames(tab_q.lungPine) = col_name
+tab_q.lungPine
+tab_q.lungPine$ASV = rownames(tab_q.lungPine)
+
+FluDF = subset(tab_q.lungPine, tab_q.lungPine$Pine_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.fecal)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+
+PineDFecal = FluDF
+sample_names(ps.fecalPine)
+```
+
+```{r, ANCOM-BC for Ctrl lung flu samples}
+sample_data(ps.fecal)$Soil = factor(sample_data(ps.fecal)$Soil, levels = c("Ctrl", "Pine","River", "Road"))
+sample_data(ps.fecal)$Flu = as.factor(sample_data(ps.fecal)$Flu)
+sample_data(ps.fecal)$Soil
+sample_data(ps.fecal)$Flu
+
+ps.fecalCtrl = subset_samples(ps.fecal, sample_data(ps.fecal)$Soil == "Ctrl" & sample_data(ps.fecal)$Time == "35") %>%
+    prune_species(speciesSums(.) > 0, .)
+
+out = ancombc(phyloseq = ps.fecalCtrl, formula = "Flu", 
+              p_adj_method = "BH", zero_cut = 0.95, lib_cut = 1000, 
+              group = "Flu", struc_zero = F, neg_lb = F, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE)
+
+sample_names(ps.fecalCtrl)
+
+out.lungCtrl = out
+res = out.lungCtrl$res
+tab_q.lungCtrl = res$q 
+
+col_name = c("Ctrl_Flu_lung")
+colnames(tab_q.lungCtrl) = col_name
+tab_q.lungCtrl
+tab_q.lungCtrl$ASV = rownames(tab_q.lungCtrl)
+
+FluDF = subset(tab_q.lungCtrl, tab_q.lungCtrl$Ctrl_Flu_lung < 0.05)
+
+names = FluDF$ASV
+FluTax = tax_table(ps.fecal)[names,] %>%
+  data.frame(.)
+FluTax$ASV = rownames(FluTax)
+FluDF = left_join(FluDF, FluTax, by = "ASV")
+
+CtrlDFecal = FluDF
+```
+
+```{r}
+BiocManager::install("microbiome")
+library(microbiome)
+
+x = microbiome::transform(ps.fecal.35, "clr")
+
+m = ordinate(x, method = "RDA", distance = "euclidean") %>%
+  plot_ordination(x, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("PCoA of Day 35 Fecal Samples")
+
+
+y= microbiome::transform(ps.lung.r, "clr")
+  
+g = ordinate(y, method = "RDA", distance = "euclidean") %>%
+  plot_ordination(y, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("PCoA of Lung Samples")
+
+r = ggarrange(m,g, labels = c("A", "B"), nrow = 2)
+
+
+PermDF = data.frame(sample_data(y))
+BetaD=phyloseq::distance(y, method = "euclidean") 
+
+#permanova by soil
+adonis(BetaD~Soil*Flu, permutations = 999, data=PermDF)
+```
+
+```{r}
+y = microbiome::transform(ps.fecal.C, "clr")
+
+ordinate(y, method = "RDA", distance = "euclidean") %>%
+  plot_ordination(y, ., type="samples", color = "Soil") +
+  theme_minimal() +
+  stat_ellipse() +
+  ggtitle("PCoA of Lung Samples")
+
+PermDF = data.frame(sample_data(y))
+BetaD=phyloseq::distance(y, method = "euclidean") 
+
+#permanova by soil
+adonis(BetaD~Soil*Flu, permutations = 999, data=PermDF)
+```
+
+```{r}
+x = refseq(ps.fecal.C) %>%
+  data.frame(.)
+
+#calls sequence and abundance columns 
+x$sequence = x$.
+
+x$abundance = "1"
+
+uniques=dada2::getUniques(x)
+
+sequences=rownames(x)
+
+dada2::uniquesToFasta(uniques,fout = "~/mouseenv/fecalseq.fasta", ids=sequences)
+
+otu = as.data.frame(cbind(t(otu_table(ps.fecal.C, taxa_are_rows = FALSE)), tax_table(ps.fecal.C)))
+
+write.table(otu, "~/mouseenv/fecalOTU.tsv", sep = "\t")
 ```
 
 
 ```{r}
-install.package("phylofactor")
-library(phylofactor)
+MouseLungMetaData = read.csv("~/mouseenv/MouseLungMetaData.csv")
 
-filter <- phyloseq::genefilter_sample(ps.lung, filterfun_sample(function(x) x >= 1), A = 0.05*nsamples(ps.lung))
+FamDFASV$bind = paste0(FamDFASV$Soil,FamDFASV$Flu,FamDFASV$Ear,FamDFASV$Cohort)
 
-ps.PF <- prune_taxa(filter, ps.lung)
+MouseLungMetaData = MouseLungMetaData %>%
+  rename(., Control = Ctrl)
 
-sample = otu_table(ps.PF) %>%
-  t(.) %>%
-  as.data.frame(.) 
+MouseLungMetaData = MouseLungMetaData %>%
+mutate(Soil = str_replace(Soil, "Control", "Ctrl"))
 
-tree = phy_tree(ps.PF)
+corDF = merge(FamDFASV, MouseLungMetaData, by = c("Soil","Cohort","Flu", "Ear"))
 
-tree = unroot(tree)
+ggplot(corDF, aes(x = X51121, y = Neutrophils, color = Soil)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  theme_minimal() + 
+  ylab("Cage Shannon diversity")+ 
+  xlab("Inverse Lung Shannon diversity") +
+  facet_grid(~Flu)
 
-tree <- makeNodeLabel(tree, method="number", prefix='n')
+ggscatter(corDFPR8, x = "logShannon", y = "Shannon.y", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Lung", ylab = "Cage")
+```
 
-sampleDF = sample_data(ps.PF) %>%
-  data.frame(.) %>%
-  select(., Soil, Flu)
+```{r}
+library(biomformat);packageVersion("biomformat")
+## [1] ‘1.6.0’
 
-sampleDF$Soil = as.factor(sampleDF$Soil)
-sampleDF$Flu = as.factor(sampleDF$Flu)
+otub<-t(as(otu_table(ps.lung),"matrix")) # 't' to transform if taxa_are_rows=FALSE
+#if taxa_are_rows=TRUE
+#otu<-as(otu_table(GlobalPatterns),"matrix"))
+otu_biom<-make_biom(data=otub)
+write_biom(otu_biom,"~/otu_biom.biom")
 
-taxtab = as.data.frame(t(tax_table(ps.PF)))
+ig <- make_network(ps.soil, "samples", max.dist=0.8)
 
-PF=PhyloFactor(t(otu_table(ps.PF)),phy_tree(ps.PF),sample_data(ps.PF),nfactors=10, frmla = Data ~ Soil*Flu,  ncores = 12)
-
-PF
-
-
+plot_network(ig, ps.soil, color="Soil",line_weight=0.3, label=NULL)
 ```
 
 
+#can likely remove
+```{r}
+lungDF = lungDF %>%
+  data.frame(.)
 
+metaDFb = read.csv("~/mouseenv/MouseLungMetaData.csv") %>%
+  rename(., "Virus" = "Flu")
+
+corDF = merge(lungDF, metaDFb, by = c("Soil","Cohort","Flu", "Ear"))
+
+rownames(corDF) = corDF$SampleName
+list = rownames(corDF)
+shannonb = Shannon.result[list,]
+
+cordDFb = cbind(corDF, shannonb$Shannon)
+
+cordDFbPR8 = subset(cordDFb, cordDFb$Flu == "PR8")
+
+cordDFbHI = subset(cordDFb, cordDFb$Flu == "HI")
+
+ggplot(cordDFbPR8, aes(x = Neutrophils, y = shannonb$Shannon)) + 
+  geom_point()
+
+ggplot(cordDFbHI, aes(x = Neutrophils, y = shannonb$Shannon)) + 
+  geom_point() 
+```
+
+```{r, do fecal taxa show up later in Day 14 or 35 soils? Pine first}
+ps.soil.pine = subset_samples(ps.soil.r, sample_data(ps.soil.r)$Soil == "Road")
+
+otu <- otu_table(ps.soil.pine)
+
+bad_taxa <- ps.soil.pine %>%
+    subset_samples(Time == "0") %>%
+    prune_species(speciesSums(.) > 0, .) %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+names = sample_names(ps.soil.pine)
+
+otu[names, bad_taxa] <- 0
+
+otu_table(ps.soil.pine) <- otu
+
+sample_sums(ps.soil.pine)
+
+ps.soil.f = prune_species(speciesSums(ps.soil.pine) > 0, ps.soil.pine)
+
+#need to remove bad taxa from fecal samples
+ps.fecal.0  = subset_samples(ps.fecal.r, sample_data(ps.fecal.r)$Time == "0")
+
+otu = otu_table(ps.fecal.0)
+
+names = sample_names(ps.fecal.0)
+
+bad_taxa2 <- ps.fecal.0 %>%
+    prune_species(speciesSums(.) > 0, .) %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+badT = intersect(bad_taxa, bad_taxa2)
+
+otu[names, badT] <- 0
+
+otu_table(ps.fecal.0) <- otu
+
+ps.fecal.f = prune_species(speciesSums(ps.fecal.0) > 0, ps.fecal.0)
+
+#left join OTU tables?
+good_taxa = ps.fecal.f %>%
+    prune_species(speciesSums(.) > 0, .) %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+good_taxa2 = ps.soil.f %>%
+    prune_species(speciesSums(.) > 0, .) %>%
+    taxa_sums %>%
+    sort(decreasing = TRUE) %>%
+    names
+
+finalT = setdiff(good_taxa2, good_taxa)
+
+otu = otu_table(ps.soil.f) 
+
+names = sample_names(ps.soil.f)
+
+otu[names, finalT] <- 0
+
+otu_table(ps.soil.f) <- otu
+
+ps.soil.f %>% subset_samples(., sample_data(ps.soil.f)$Time != "0") %>%
+              sample_sums(.) %>%
+              sd(.)
+
+ps.soil.f %>% subset_samples(., sample_data(ps.soil.f)$Time != "0") %>%
+              sample_sums(.) %>%
+              mean(.)
+```

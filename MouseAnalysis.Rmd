@@ -7,14 +7,16 @@ output: html_document
 #install.packages("ggpubr")
 #install.packages("rstatix")
 #install.packages("tidyverse")
-#install.packages("ggthemes")
+install.packages("ggthemes")
+install.packages("lsmeans")
+library(lsmeans)
 library(ggpubr)
 library(rstatix)
 library(tidyverse)
 library(readr)
 library(ggthemes)
 
-MouseLungMetaData <- read_csv("PR8/MouseLungMetaData.csv")
+MouseLungMetaData <- read_csv("~/mouseenv/MouseLungMetaData.csv")
 ```
 
 ```{r}
@@ -46,10 +48,10 @@ weightgain %>%
 ```{r}
 ggboxplot(weightgain, x = "time", y = "weight", facet.by ="Soil")
 
-ggline(weightgain, x = "time", y = "weight", group = "ID", facet.by = "Soil")+theme_fivethirtyeight()
+ggline(weightgain, x = "time", y = "weight", group = "ID", facet.by = "Soil")
 
 weightgain %>%
-  ggline(., x = "time", y= "weight", color = "Soil", add = "mean_se") + theme_fivethirtyeight()
+  ggline(., x = "time", y= "weight", color = "Soil", add = "mean_se") 
 ```
 
 ```{r}
@@ -100,9 +102,6 @@ model = lme(weight ~ time + Soil + time*Soil,
             data = weightgainaov)
 
 anova(model)
-
-install.packages("lsmeans")
-library(lsmeans)
 
 lsmeans(model, pairwise~time*Soil, adjust="tukey")
 
@@ -277,8 +276,11 @@ TukeyHSD(aovcell)
 ```
 
 ```{r}
-cellcount  %>%
-  ggboxplot(., x = "Soil", y = "Macrophages", facet.by = "Virus")
+cellcount %>%
+  ggboxplot(., x = "Soil", y = "Macrophages", facet.by = "Virus", fill = "Soil") +
+  theme_minimal() +
+  xlab(NULL) + 
+  theme(legend.position = "none")
 
 aovcell = cellcount %>%
   stats::aov(Macrophages ~ Virus*Soil, data = .)
@@ -287,8 +289,11 @@ Anova(aovcell)
 
 TukeyHSD(aovcell)
 
-cellcount  %>%
-  ggboxplot(., x = "Soil", y = "Neutrophils", facet.by = "Virus")
+g=cellcount  %>%
+  ggboxplot(., x = "Soil", y = "Neutrophils", facet.by = "Virus", fill = "Soil") +
+  theme_minimal() +
+  xlab(NULL) + 
+  theme(legend.position = "none")
 
 aovcell = cellcount %>%
   stats::aov(Neutrophils ~ Virus*Soil, data = .)
@@ -307,7 +312,7 @@ Anova(aovcell)
 
 TukeyHSD(aovcell)
 
-g=cellcount  %>%
+cellcount  %>%
   ggboxplot(., x = "Soil", y = "Lymphocytes", facet.by = "Virus")
 
 aovcell = cellcount %>%
@@ -316,6 +321,8 @@ aovcell = cellcount %>%
 Anova(aovcell)
 
 TukeyHSD(aovcell)
+
+r = ggarrange(m,g, labels = c("A", "B"), nrow = 2)
 ```
 
 ```{r}
@@ -359,5 +366,10 @@ Anova(aovcell)
 
 TukeyHSD(aovcell)
 
+```
+
+```{r}
+VirusCount = subset(MouseLungMetaData, MouseLungMetaData$PR8_qPCR != "NA") %>%
+  select(., PR8_qPCR, Soil, Virus)
 ```
 
